@@ -2,18 +2,49 @@ import AppKit
 import ServiceManagement
 import SwiftUI
 
-struct AgentPulseApp: App {
-    @NSApplicationDelegateAdaptor(AppDelegate.self) var delegate
+/// Plain AppKit entry point. Everything lives in the menu-bar modules, the floating bar and
+/// our own windows; a SwiftUI `App` would need a scene, and macOS opens an empty
+/// "Settings" scene window at launch when that is the only one.
+enum AgentPulseApp {
+    static func main() {
+        let app = NSApplication.shared
+        let delegate = AppDelegate()
+        app.delegate = delegate
+        app.setActivationPolicy(.accessory)
+        app.mainMenu = mainMenu()
+        withExtendedLifetime(delegate) { app.run() }
+    }
 
-    var body: some Scene {
-        // Everything lives in the menu-bar modules, the floating bar and the settings window.
-        Settings { EmptyView() }
+    /// Not visible for an accessory app, but provides ⌘, / ⌘W / ⌘Q and copy-paste shortcuts.
+    private static func mainMenu() -> NSMenu {
+        let menu = NSMenu()
+        let appItem = NSMenuItem()
+        let appMenu = NSMenu()
+        appMenu.addItem(withTitle: "设置…", action: #selector(AppDelegate.showSettings), keyEquivalent: ",")
+        appMenu.addItem(.separator())
+        appMenu.addItem(withTitle: "退出 AgentPulse", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        appItem.submenu = appMenu
+        menu.addItem(appItem)
+
+        let editItem = NSMenuItem()
+        let edit = NSMenu(title: "编辑")
+        edit.addItem(withTitle: "关闭窗口", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
+        edit.addItem(withTitle: "剪切", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
+        edit.addItem(withTitle: "拷贝", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+        edit.addItem(withTitle: "粘贴", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+        edit.addItem(withTitle: "全选", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+        editItem.submenu = edit
+        menu.addItem(editItem)
+        return menu
     }
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    @objc func showSettings() {
+        Task { @MainActor in SettingsWindow.show() }
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
-        NSApp.setActivationPolicy(.accessory)
         Task { @MainActor in
             Monitor.shared.start()
             HUDController.shared.apply()
