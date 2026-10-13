@@ -260,6 +260,47 @@ struct Footnote: View {
     }
 }
 
+/// A selectable row for sidebars and lists. Built from plain buttons instead of
+/// `List(selection:)`, whose rows did not respond to clicks in our windows.
+struct SelectRow<Content: View>: View {
+    let selected: Bool
+    let action: () -> Void
+    @ViewBuilder let content: Content
+    @State private var hover = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 10) { content }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 7)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(selected ? Theme.raisedFill : (hover ? Theme.groupFill : Color.clear))
+                )
+                .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .onHover { hover = $0 }
+        .accessibilityAddTraits(selected ? .isSelected : [])
+    }
+}
+
+/// Background of a window's side column: a shade lighter than the content, with a hairline edge.
+struct SidePane<Content: View>: View {
+    var width: CGFloat
+    @ViewBuilder let content: Content
+    var body: some View {
+        content
+            .frame(width: width)
+            .frame(maxHeight: .infinity, alignment: .top)
+            .background(Color.primary.opacity(0.035).ignoresSafeArea())
+            .overlay(alignment: .trailing) {
+                Rectangle().fill(Theme.hairline).frame(width: 1).ignoresSafeArea()
+            }
+    }
+}
+
 struct SectionLabel: View {
     let text: String
     var body: some View {

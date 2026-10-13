@@ -81,7 +81,9 @@ enum PreviewRenderer {
         }
 
         // Form uses AppKit controls, which ImageRenderer can't draw: snapshot a real hosting view instead.
+        // The window background isn't part of the hosting view's snapshot; paint it in.
         let host = NSHostingView(rootView: SettingsView(page: .display)
+            .background(Color(nsColor: .windowBackgroundColor))
             .environmentObject(monitor).environmentObject(HUDController.shared).environmentObject(MenuBarModules.shared))
         let win = NSWindow(contentRect: NSRect(x: -3000, y: 0, width: 780, height: 640),
                            styleMask: [.titled], backing: .buffered, defer: false)

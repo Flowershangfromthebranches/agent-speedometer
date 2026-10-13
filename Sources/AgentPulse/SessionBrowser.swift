@@ -8,14 +8,14 @@ enum SessionBrowser {
 
     static func show() {
         if window == nil {
-            let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 980, height: 620),
+            let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1180, height: 700),
                              styleMask: [.titled, .closable, .resizable, .miniaturizable, .fullSizeContentView],
                              backing: .buffered, defer: false)
             w.title = "更多会话"
             w.titlebarAppearsTransparent = true
             w.titleVisibility = .hidden
             w.isReleasedWhenClosed = false
-            w.minSize = NSSize(width: 760, height: 420)
+            w.minSize = NSSize(width: 1060, height: 460)
             w.contentView = NSHostingView(rootView: SessionBrowserView().environmentObject(Monitor.shared))
             w.center()
             w.setFrameAutosaveName("AgentPulseSessionBrowser")
@@ -39,12 +39,10 @@ struct SessionBrowserView: View {
     @State private var query = ""
 
     var body: some View {
-        NavigationSplitView {
-            toolList.navigationSplitViewColumnWidth(min: 200, ideal: 230)
-        } content: {
-            sessionList.navigationSplitViewColumnWidth(min: 260, ideal: 320)
-        } detail: {
-            detailPane
+        HStack(spacing: 0) {
+            SidePane(width: 216) { toolList }
+            SidePane(width: 300) { sessionList }
+            detailPane.frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .onAppear { if tool == nil { tool = preselectTool ?? monitor.supportedTools.first?.id } }
         .onChange(of: monitor.tools) { tools in
@@ -57,18 +55,23 @@ struct SessionBrowserView: View {
     // MARK: Tools
 
     private var toolList: some View {
-        List(selection: $tool) {
-            Section("已适配") {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 2) {
+                SectionLabel(text: "已适配")
                 ForEach(monitor.tools.filter(\.supported)) { t in
-                    toolRow(t).tag(Optional(t.id))
+                    SelectRow(selected: tool == t.id, action: { tool = t.id }) { toolRow(t) }
+                }
+                let others = monitor.tools.filter { !$0.supported }
+                if !others.isEmpty {
+                    SectionLabel(text: "已检测到，暂无法读取").padding(.top, 10)
+                    ForEach(others) { t in
+                        SelectRow(selected: tool == t.id, action: { tool = t.id }) { toolRow(t) }
+                    }
                 }
             }
-            let others = monitor.tools.filter { !$0.supported }
-            if !others.isEmpty {
-                Section("已检测到，暂无法读取") {
-                    ForEach(others) { t in toolRow(t).tag(Optional(t.id)) }
-                }
-            }
+            .padding(.horizontal, 10)
+            .padding(.top, 10)
+            .padding(.bottom, 8)
         }
         .safeAreaInset(edge: .bottom) {
             HStack {
@@ -83,6 +86,10 @@ struct SessionBrowserView: View {
             }
             .font(.system(size: 11.5))
             .padding(10)
+            .background(
+                Color(nsColor: .windowBackgroundColor).overlay(Color.primary.opacity(0.035))
+            )
+            .overlay(alignment: .top) { Rectangle().fill(Theme.hairline).frame(height: 1) }
         }
     }
 
@@ -110,16 +117,21 @@ struct SessionBrowserView: View {
             } else if sessions.isEmpty {
                 placeholder("还没有会话", "用 \(t.spec.name) 开始一个对话后会出现在这里")
             } else {
-                List(selection: $selected) {
-                    ForEach(groupedByDay, id: \.0) { day, refs in
-                        Section(day) {
-                            ForEach(refs) { ref in sessionRow(ref).tag(Optional(ref.path)) }
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 2) {
+                        ForEach(groupedByDay, id: \.0) { day, refs in
+                            SectionLabel(text: day).padding(.top, 8)
+                            ForEach(refs) { ref in
+                                SelectRow(selected: selected == ref.path, action: { selected = ref.path }) {
+                                    sessionRow(ref)
+                                }
+                            }
                         }
                     }
+                    .padding(.horizontal, 10)
+                    .padding(.bottom, 12)
                 }
                 .safeAreaInset(edge: .top, spacing: 0) { listHeader(t) }
-                .navigationTitle(t.spec.name)
-                .navigationSubtitle("\(sessions.count) 个会话")
             }
         } else {
             placeholder("选择一个工具", "左侧是在这台 Mac 上检测到的 agent 工具")

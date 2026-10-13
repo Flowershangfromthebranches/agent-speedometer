@@ -152,8 +152,13 @@ enum SessionDiscovery {
         }
         guard let fh = FileHandle(forReadingAtPath: path) else { return (nil, nil, nil) }
         defer { try? fh.close() }
-        guard let data = try? fh.read(upToCount: 64 * 1024) else { return (nil, nil, nil) }
-        // Lossy decode: the 64 KB cut can land inside a multi-byte character.
+        guard var data = try? fh.read(upToCount: 64 * 1024) else { return (nil, nil, nil) }
+        // A very long first line (e.g. a forked session's summary) can push `cwd` further in.
+        if data.count == 64 * 1024, data.range(of: Data(#""cwd""#.utf8)) == nil,
+           let more = try? fh.read(upToCount: 960 * 1024) {
+            data.append(more)
+        }
+        // Lossy decode: the cut can land inside a multi-byte character.
         let s = String(decoding: data, as: UTF8.self)
         let ns = s as NSString
         let range = NSRange(location: 0, length: ns.length)

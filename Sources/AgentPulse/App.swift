@@ -121,38 +121,43 @@ struct SettingsView: View {
     }
 
     var body: some View {
-        NavigationSplitView {
-            List(selection: $page) {
-                ForEach(SettingsPage.allCases) { p in
-                    Label {
-                        HStack {
+        let current = page ?? .current
+        HStack(spacing: 0) {
+            SidePane(width: 220) {
+                VStack(alignment: .leading, spacing: 2) {
+                    ForEach(SettingsPage.allCases) { p in
+                        SelectRow(selected: current == p, action: { page = p }) {
+                            Image(systemName: p.symbol)
+                                .font(.system(size: 13, weight: .medium))
+                                .foregroundStyle(current == p ? Theme.accent : Color.secondary)
+                                .frame(width: 20)
                             Text(p.title)
+                                .font(.system(size: 13, weight: current == p ? .semibold : .regular))
+                            Spacer(minLength: 4)
                             if p == .tools, !monitor.supportedTools.isEmpty {
-                                Spacer()
-                                Text("\(monitor.supportedTools.count)").font(.system(size: 11).monospacedDigit())
+                                Text("\(monitor.supportedTools.count)")
+                                    .font(.system(size: 11, weight: .medium).monospacedDigit())
                                     .foregroundStyle(.secondary)
                             }
                         }
-                    } icon: {
-                        Image(systemName: p.symbol)
                     }
-                    .tag(Optional(p))
+                    Spacer(minLength: 12)
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        Image(systemName: "lock")
+                        Text(verbatim: "只读本机日志，不联网、不读取凭据与对话内容。")
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 10)
                 }
+                .padding(.horizontal, 10)
+                .padding(.top, 14)
+                .padding(.bottom, 16)
             }
-            .navigationSplitViewColumnWidth(min: 190, ideal: 210, max: 260)
-            .safeAreaInset(edge: .bottom) {
-                HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    Image(systemName: "lock")
-                    Text(verbatim: "只读本机日志，不联网、不读取凭据与对话内容。")
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
-                .padding(14)
-            }
-        } detail: {
+
             Group {
-                switch page ?? .current {
+                switch current {
                 case .current: CurrentSessionPage()
                 case .sessions: SessionsPage()
                 case .tools: ToolsPage()
@@ -160,7 +165,7 @@ struct SettingsView: View {
                 case .about: AboutPage()
                 }
             }
-            .navigationTitle((page ?? .current).title)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .toggleStyle(.switch)
         .frame(minWidth: 680, minHeight: 460)
