@@ -70,8 +70,9 @@ final class HUDController: NSObject, ObservableObject, NSWindowDelegate {
         let size = host.intrinsicContentSize
         guard size.width > 0, size.height > 0 else { return }
         let vf = (bar.screen ?? NSScreen.main)?.visibleFrame ?? .zero
-        var origin = NSPoint(x: bar.frame.minX, y: bar.frame.maxY - 8)
-        if origin.y + size.height > vf.maxY { origin.y = bar.frame.minY - size.height + 8 }
+        // Both panels carry 16pt of transparent margin for the shadow; leave a 12pt visual gap.
+        var origin = NSPoint(x: bar.frame.minX, y: bar.frame.maxY - 20)
+        if origin.y + size.height > vf.maxY { origin.y = bar.frame.minY - size.height + 20 }
         origin.x = min(max(origin.x, vf.minX), max(vf.minX, vf.maxX - size.width))
         c.setFrame(NSRect(origin: origin, size: size), display: true)
     }
@@ -185,26 +186,29 @@ struct HUDRootView: View {
     var body: some View {
         HStack(spacing: 4) {
             ZStack {
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .fill(Color.primary.opacity(hud.openCard == .sessions ? 0.10 : 0))
+                Capsule().fill(Color.white.opacity(hud.openCard == .sessions ? 0.14 : 0))
                 WindowDragHandle { hud.toggleCard(.sessions) }
-                HStack(spacing: 5) {
-                    Image(systemName: monitor.stats?.source == .codex ? "chevron.left.forwardslash.chevron.right" : "sparkle")
-                        .font(.system(size: 10, weight: .semibold))
+                HStack(spacing: 7) {
+                    Image(systemName: monitor.stats?.source.symbol ?? "gauge.with.dots.needle.67percent")
+                        .font(.system(size: 12, weight: .medium))
                     Text(modelLabel)
-                        .font(.system(size: 11.5))
+                        .font(.system(size: 12.5))
                     if monitor.pinnedPath != nil {
-                        Image(systemName: "pin.fill").font(.system(size: 8))
+                        Image(systemName: "pin.fill").font(.system(size: 9))
                     }
-                    Image(systemName: "chevron.up.chevron.down").font(.system(size: 8, weight: .semibold))
+                    Image(systemName: "chevron.up.chevron.down").font(.system(size: 9, weight: .semibold))
                 }
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(.secondary)
                 .allowsHitTesting(false)
-                .padding(.horizontal, 8)
-                .padding(.vertical, 5)
+                .padding(.horizontal, 12)
             }
+            .frame(height: 40)
             .fixedSize()
             .help("点击切换会话 · 拖动移动位置\n当前：\(monitor.stats?.projectName ?? "—")")
+            .accessibilityElement(children: .combine)
+            .accessibilityAddTraits(.isButton)
+
+            Rectangle().fill(Color.white.opacity(0.12)).frame(width: 1, height: 20)
 
             StatusBarView(
                 stats: monitor.stats,
@@ -212,10 +216,9 @@ struct HUDRootView: View {
                 onTap: { hud.toggleCard($0) }
             )
         }
-        .padding(.horizontal, 6)
-        .padding(.vertical, 4)
-        .background(hudBackground(radius: 11))
-        .padding(10) // room for the shadow
+        .padding(6)
+        .glassSurface(Capsule())
+        .padding(16) // room for the shadow
         .environment(\.colorScheme, .dark)
         .fixedSize()
         .contextMenu {
@@ -228,7 +231,6 @@ struct HUDRootView: View {
         guard let s = monitor.stats else { return "AgentPulse" }
         return s.model ?? s.source.displayName
     }
-
 }
 
 /// The detail card, in its own panel so opening it never moves or resizes the bar.
@@ -240,26 +242,42 @@ struct HUDCardView: View {
         Group {
             if hud.openCard == .sessions {
                 SessionListView(compact: false) { hud.closeCard() }
-                    .padding(12)
-                    .frame(width: 360)
-                    .background(hudBackground(radius: 14))
+                    .padding(14)
+                    .frame(width: 372)
+                    .glassSurface(RoundedRectangle(cornerRadius: 28, style: .continuous))
             } else if let seg = hud.openCard, let s = monitor.stats {
-                CardFor(seg: seg, s: s)
-                    .padding(16)
-                    .background(hudBackground(radius: 14))
+                HUDDetailCard(seg: seg, s: s)
                     .onTapGesture { hud.closeCard() }
             }
         }
-        .padding(10)
+        .padding(16)
         .environment(\.colorScheme, .dark)
         .fixedSize()
     }
 }
 
-func hudBackground(radius: CGFloat) -> some View {
-    RoundedRectangle(cornerRadius: radius, style: .continuous)
-        .fill(Color(white: 0.13).opacity(0.94))
-        .overlay(RoundedRectangle(cornerRadius: radius, style: .continuous)
-            .strokeBorder(Color.white.opacity(0.08)))
-        .shadow(color: .black.opacity(0.35), radius: 8, y: 2)
+/// A segment's details with a title row, as shown above the floating bar.
+struct HUDDetailCard: View {
+    let seg: Segment
+    let s: SessionStats
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(spacing: 10) {
+                Circle().fill(Theme.raisedFill)
+                    .frame(width: 30, height: 30)
+                    .overlay(Image(systemName: seg.symbol).font(.system(size: 13, weight: .medium)))
+                Text(seg.title).font(.system(size: 15, weight: .semibold))
+                Spacer(minLength: 12)
+                Text(s.projectName)
+                    .font(.system(size: 11.5)).foregroundStyle(.secondary).lineLimit(1)
+                    .padding(.horizontal, 10).padding(.vertical, 4)
+                    .background(Capsule().fill(Color.primary.opacity(0.07)))
+            }
+            CardFor(seg: seg, s: s, speedLayout: .tiles)
+        }
+        .padding(20)
+        .frame(width: 384)
+        .glassSurface(RoundedRectangle(cornerRadius: 28, style: .continuous))
+    }
 }

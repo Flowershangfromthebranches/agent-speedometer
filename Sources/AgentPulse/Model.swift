@@ -1,17 +1,5 @@
 import Foundation
 
-enum AgentSource: String, CaseIterable, Codable {
-    case claude
-    case codex
-
-    var displayName: String {
-        switch self {
-        case .claude: return "Claude Code"
-        case .codex: return "Codex"
-        }
-    }
-}
-
 enum BoundaryKind {
     case prompt
     case tool
@@ -57,6 +45,7 @@ struct RateLimitWindow {
 /// Snapshot handed to the UI.
 struct SessionStats {
     var source: AgentSource
+    /// Unique session key (the log file path for file-based tools).
     var path: String
     var cwd: String?
     var title: String?
@@ -66,6 +55,8 @@ struct SessionStats {
     var lastTPS: Double?
     var recentTPS: Double?
     var sessionTPS: Double?
+    /// Output speed of the most recent usable steps, oldest first (for the sparkline).
+    var stepTPS: [Double] = []
     var avgTTFT: TimeInterval?
     var ttftAvailable: Bool = false
     var modelTime: TimeInterval = 0
@@ -82,6 +73,8 @@ struct SessionStats {
     var lastActivity: Date?
     var rateLimitPrimary: RateLimitWindow?
     var rateLimitSecondary: RateLimitWindow?
+    /// Why speed can't be shown for this tool, if that's the case.
+    var speedNote: String?
 
     var totalTokens: Int { uncachedInput + cacheRead + cacheWrite + outputTokens }
     var cacheHitRate: Double? {
@@ -112,6 +105,7 @@ struct SessionAccumulator {
     var contextWindow: Int?
     var rateLimitPrimary: RateLimitWindow?
     var rateLimitSecondary: RateLimitWindow?
+    var speedNote: String?
 
     mutating func boundary(_ ts: Date, _ kind: BoundaryKind) {
         if lastBoundary.map({ ts >= $0 }) ?? true {
@@ -141,8 +135,12 @@ struct SessionAccumulator {
         return (prevEnd ?? ts, nil)
     }
 
-    func snapshot(source: AgentSource, path: String, contextWindowOverride: Int?) -> SessionStats {
+    /// - Parameter estimateContextWindow: guess 200K / 1M when the log doesn't say (Claude Code).
+    ///   Otherwise an unknown window stays unknown rather than showing a wrong percentage.
+    func snapshot(source: AgentSource, path: String, contextWindowOverride: Int?,
+                  estimateContextWindow: Bool = false) -> SessionStats {
         var s = SessionStats(source: source, path: path)
+        s.speedNote = speedNote
         s.cwd = cwd
         s.title = title
         s.model = model ?? requests.last?.model
@@ -176,6 +174,7 @@ struct SessionAccumulator {
         if ttftN > 0 { s.avgTTFT = ttftSum / Double(ttftN); s.ttftAvailable = true }
 
         let speedy = requests.filter(Self.usableForSpeed)
+        s.stepTPS = speedy.suffix(40).map { Double($0.outputTokens) / $0.decodeDuration }
         if let last = speedy.last { s.lastTPS = Double(last.outputTokens) / last.decodeDuration }
         let recent = speedy.suffix(5)
         let rDur = recent.reduce(0) { $0 + $1.decodeDuration }
@@ -186,7 +185,7 @@ struct SessionAccumulator {
             s.contextWindow = w
         } else if let o = contextWindowOverride {
             s.contextWindow = o
-        } else {
+        } else if estimateContextWindow {
             // Unknown window: pick the smallest common size that fits what we've seen.
             let maxSeen = requests.map(\.contextTokens).max() ?? 0
             let modelName = (s.model ?? "").lowercased()

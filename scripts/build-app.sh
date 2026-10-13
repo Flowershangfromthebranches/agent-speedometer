@@ -6,7 +6,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-VERSION="0.5.0"
+VERSION="0.6.0"
 
 # 当前开发者目录是 Command Line Tools 时（其 SwiftPM 可能损坏），仅对本脚本改用完整 Xcode。
 if [[ -z "${DEVELOPER_DIR:-}" && -d /Applications/Xcode.app ]] && xcode-select -p | grep -q CommandLineTools; then

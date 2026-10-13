@@ -1,225 +1,157 @@
 import Foundation
 import Combine
 
-struct SessionRef: Identifiable, Equatable {
-    var id: String { path }
-    let path: String
-    let source: AgentSource
-    let modified: Date
-    var cwd: String?
-
-    var label: String {
-        if let c = cwd { return (c as NSString).lastPathComponent }
-        return ((path as NSString).lastPathComponent as NSString).deletingPathExtension
-    }
-}
-
-/// Finds session logs the agent tools already write to the local disk. Read-only.
-enum SessionDiscovery {
-    static var home: URL { FileManager.default.homeDirectoryForCurrentUser }
-
-    static var claudeProjectsDir: URL {
-        if let d = ProcessInfo.processInfo.environment["CLAUDE_CONFIG_DIR"], !d.isEmpty {
-            return URL(fileURLWithPath: d).appendingPathComponent("projects")
-        }
-        return home.appendingPathComponent(".claude/projects")
-    }
-
-    static var codexSessionsDir: URL {
-        if let d = ProcessInfo.processInfo.environment["CODEX_HOME"], !d.isEmpty {
-            return URL(fileURLWithPath: d).appendingPathComponent("sessions")
-        }
-        return home.appendingPathComponent(".codex/sessions")
-    }
-
-    static func source(forPath p: String) -> AgentSource {
-        p.contains("/.codex/") || (p as NSString).lastPathComponent.hasPrefix("rollout-") ? .codex : .claude
-    }
-
-    static func discover(maxAge: TimeInterval = 3 * 86400) -> [SessionRef] {
-        let cutoff = Date().addingTimeInterval(-maxAge)
-        var out: [SessionRef] = []
-        let fm = FileManager.default
-
-        // Claude Code: projects/<project>/<session>.jsonl (top level only; subagents live deeper)
-        if let projects = try? fm.contentsOfDirectory(at: claudeProjectsDir, includingPropertiesForKeys: nil) {
-            for dir in projects {
-                guard let files = try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.contentModificationDateKey]) else { continue }
-                for f in files where f.pathExtension == "jsonl" {
-                    if let m = mtime(f), m > cutoff { out.append(SessionRef(path: f.path, source: .claude, modified: m)) }
-                }
-            }
-        }
-
-        // Codex: sessions/YYYY/MM/DD/rollout-*.jsonl — only the most recent day folders.
-        for dayDir in recentCodexDayDirs(limit: 4) {
-            guard let files = try? fm.contentsOfDirectory(at: dayDir, includingPropertiesForKeys: [.contentModificationDateKey]) else { continue }
-            for f in files where f.pathExtension == "jsonl" {
-                if let m = mtime(f), m > cutoff { out.append(SessionRef(path: f.path, source: .codex, modified: m)) }
-            }
-        }
-        return out.sorted { $0.modified > $1.modified }
-    }
-
-    private static func recentCodexDayDirs(limit: Int) -> [URL] {
-        let fm = FileManager.default
-        func sortedSubdirs(_ u: URL) -> [URL] {
-            ((try? fm.contentsOfDirectory(at: u, includingPropertiesForKeys: nil)) ?? [])
-                .filter { $0.lastPathComponent.allSatisfy(\.isNumber) }
-                .sorted { $0.lastPathComponent > $1.lastPathComponent }
-        }
-        var days: [URL] = []
-        for y in sortedSubdirs(codexSessionsDir) {
-            for m in sortedSubdirs(y) {
-                for d in sortedSubdirs(m) {
-                    days.append(d)
-                    if days.count >= limit { return days }
-                }
-            }
-        }
-        return days
-    }
-
-    private static func mtime(_ u: URL) -> Date? {
-        (try? u.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
-    }
-
-    private static let cwdRegex = try! NSRegularExpression(pattern: #""cwd"\s*:\s*("(?:[^"\\]|\\.)*")"#)
-
-    /// Reads the first 64 KB to find the working directory. Only the `cwd` field is extracted.
-    static func peekCwd(_ path: String) -> String? {
-        guard let fh = FileHandle(forReadingAtPath: path) else { return nil }
-        defer { try? fh.close() }
-        guard let data = try? fh.read(upToCount: 64 * 1024),
-              let s = String(data: data, encoding: .utf8) ?? String(data: data.prefix(60 * 1024), encoding: .utf8)
-        else { return nil }
-        let ns = s as NSString
-        guard let m = cwdRegex.firstMatch(in: s, range: NSRange(location: 0, length: ns.length)) else { return nil }
-        let quoted = ns.substring(with: m.range(at: 1))
-        return (try? JSONSerialization.jsonObject(with: Data(quoted.utf8), options: .fragmentsAllowed)) as? String
-    }
-}
-
-enum SourceFilter: String, CaseIterable, Identifiable {
-    case all, claude, codex
-    var id: String { rawValue }
-    var label: String {
-        switch self {
-        case .all: return "全部"
-        case .claude: return "Claude Code"
-        case .codex: return "Codex"
-        }
-    }
-    func allows(_ s: AgentSource) -> Bool {
-        switch self {
-        case .all: return true
-        case .claude: return s == .claude
-        case .codex: return s == .codex
-        }
-    }
-}
-
 @MainActor
 final class Monitor: ObservableObject {
     static let shared = Monitor()
 
+    /// A session counts as running if its log was written within this window.
+    static let runningWindow: TimeInterval = 10 * 60
+
+    /// Agent tools found on this Mac (scanned at launch and on demand).
+    @Published private(set) var tools: [DetectedTool] = []
+    @Published private(set) var scanning = false
+    /// Stats of the session shown in the bar and menu bar.
     @Published private(set) var stats: SessionStats?
-    /// Live stats for every tracked session (the most recent few), keyed by path.
+    /// Live stats for tracked sessions (running ones plus the pinned one), keyed by path.
     @Published private(set) var allStats: [String: SessionStats] = [:]
+    /// Recent top-level sessions of all supported tools (last 3 days), newest first.
     @Published private(set) var sessions: [SessionRef] = []
-    @Published var pinnedPath: String? {
-        didSet {
-            guard oldValue != pinnedPath else { return }
-            // Switch instantly using already-parsed stats, then refresh.
-            if let p = activePath, let s = allStats[p] { stats = s }
-            refreshNow()
-        }
-    }
-    @Published var sourceFilter: SourceFilter {
-        didSet { UserDefaults.standard.set(sourceFilter.rawValue, forKey: "sourceFilter"); refreshNow() }
+    @Published private(set) var pinnedPath: String?
+    /// Restrict auto-follow to one tool id ("" = any tool).
+    @Published var autoFollowTool: String {
+        didSet { UserDefaults.standard.set(autoFollowTool, forKey: "autoFollowTool"); refreshNow() }
     }
     /// 0 = auto. Used for Claude Code, whose logs do not record the context window size.
     @Published var claudeContextWindow: Int {
         didSet { UserDefaults.standard.set(claudeContextWindow, forKey: "claudeContextWindow"); refreshNow() }
     }
 
-    private var tails: [String: SessionTail] = [:]
+    private var readers: [String: SessionReader] = [:]
+    /// The pinned session's ref, which may be older than the recent list (pinned from the browser).
+    private var pinnedRef: SessionRef?
     private let queue = DispatchQueue(label: "agentpulse.parse", qos: .utility)
+    private let browseQueue = DispatchQueue(label: "agentpulse.browse", qos: .userInitiated)
     private var timer: Timer?
     private var tick = 0
     private var busy = false
+    private var discovering = false
+    private var demo = false
 
     private init() {
-        sourceFilter = SourceFilter(rawValue: UserDefaults.standard.string(forKey: "sourceFilter") ?? "") ?? .all
+        autoFollowTool = UserDefaults.standard.string(forKey: "autoFollowTool") ?? ""
         claudeContextWindow = UserDefaults.standard.integer(forKey: "claudeContextWindow")
     }
 
     func start() {
-        guard timer == nil else { return }
-        rescan()
-        refreshNow()
+        guard timer == nil, !demo else { return }
+        rescanTools()
         timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.onTick() }
         }
     }
 
-    var activePath: String? {
-        if let p = pinnedPath { return p }
-        return sessions.first { sourceFilter.allows($0.source) }?.path
+    // MARK: Tools
+
+    /// Looks for installed agent tools (apps, CLIs, data folders), then their sessions.
+    func rescanTools() {
+        scanning = true
+        queue.async {
+            let found = ToolScanner.scan()
+            Task { @MainActor in
+                self.tools = found
+                self.scanning = false
+                self.discover()
+            }
+        }
     }
 
-    private func onTick() {
-        tick += 1
-        if tick % 3 == 0 { rescan() }
+    var supportedTools: [DetectedTool] { tools.filter(\.supported) }
+
+    // MARK: Session lists
+
+    /// Sessions written to recently: the agent is (or just was) working on them.
+    var runningSessions: [SessionRef] {
+        let cutoff = Date().addingTimeInterval(-Self.runningWindow)
+        return sessions.filter { ref in
+            ref.modified > cutoff || allStats[ref.path]?.waitingSince != nil
+        }
+    }
+
+    var pinnedSession: SessionRef? {
+        guard let p = pinnedPath else { return nil }
+        return sessions.first { $0.path == p } ?? pinnedRef
+    }
+
+    var activePath: String? {
+        if let p = pinnedPath { return p }
+        let allowed = sessions.filter { autoFollowTool.isEmpty || $0.source.id == autoFollowTool }
+        let cutoff = Date().addingTimeInterval(-Self.runningWindow)
+        return (allowed.first { $0.modified > cutoff } ?? allowed.first)?.path
+    }
+
+    func pin(_ ref: SessionRef) {
+        pinnedRef = ref
+        setPinned(ref.path)
+    }
+
+    func unpin() { setPinned(nil) }
+
+    private func setPinned(_ path: String?) {
+        guard path != pinnedPath else { return }
+        pinnedPath = path
+        // Switch instantly using already-parsed stats, then refresh.
+        if let p = activePath, let s = allStats[p] { stats = s }
         refreshNow()
     }
 
-    private func rescan() {
-        let previous = Dictionary(uniqueKeysWithValues: sessions.map { ($0.path, $0.cwd) })
+    // MARK: Polling
+
+    private func onTick() {
+        tick += 1
+        if tick % 10 == 0 { discover() }  // new sessions; running ones refresh every tick
+        refreshNow()
+    }
+
+    private func discover() {
+        guard !discovering, !demo else { return }
+        discovering = true
+        let specs = supportedTools.map(\.spec)
+        let since = Date().addingTimeInterval(-3 * 86400)
         queue.async {
-            var found = SessionDiscovery.discover()
-            for i in found.indices {
-                found[i].cwd = previous[found[i].path] ?? SessionDiscovery.peekCwd(found[i].path)
-            }
+            let found = specs.flatMap { SessionDiscovery.sessions(for: $0, since: since, limit: 60) }
+                .filter { !$0.isSubagent }
+                .sorted { $0.modified > $1.modified }
             Task { @MainActor in
+                self.discovering = false
                 if found != self.sessions { self.sessions = found }
             }
         }
     }
 
-    /// Screenshot mode: show the given sessions instead of real ones (no polling).
-    func loadDemo(sessions: [SessionRef], stats: [String: SessionStats]) {
-        self.sessions = sessions
-        allStats = stats
-        self.stats = sessions.first.flatMap { stats[$0.path] }
-    }
-
-    /// Sessions parsed every tick: the active one plus the most recently written others.
-    static let trackedLimit = 8
-    var trackedSessions: [SessionRef] { Array(sessions.prefix(Self.trackedLimit)) }
-
     func refreshNow() {
-        guard !busy else { return }
-        let active = activePath
-        var paths = trackedSessions.map(\.path)
-        if let a = active, !paths.contains(a) { paths.append(a) }
-        guard !paths.isEmpty else { stats = nil; allStats = [:]; return }
+        guard !busy, !demo else { return }
+        var refs = runningSessions
+        if let a = activePath, !refs.contains(where: { $0.path == a }),
+           let ref = sessions.first(where: { $0.path == a }) ?? pinnedSession {
+            refs.append(ref)
+        }
+        guard !refs.isEmpty else { stats = nil; allStats = [:]; return }
 
         busy = true
-        // Keep parsed state only for tracked sessions.
-        tails = tails.filter { paths.contains($0.key) }
-        let work: [SessionTail] = paths.map { p in
-            let t = tails[p] ?? SessionTail(path: p, source: SessionDiscovery.source(forPath: p))
-            tails[p] = t
-            return t
+        let paths = Set(refs.map(\.path))
+        readers = readers.filter { paths.contains($0.key) }
+        let work: [SessionReader] = refs.compactMap { ref in
+            if let r = readers[ref.path] { return r }
+            let r = Readers.make(ref)
+            readers[ref.path] = r
+            return r
         }
         let override = claudeContextWindow > 0 ? claudeContextWindow : nil
         queue.async {
             var snaps: [String: SessionStats] = [:]
-            for tail in work {
-                tail.poll()
-                snaps[tail.path] = tail.parser.acc.snapshot(source: tail.source, path: tail.path,
-                                                            contextWindowOverride: tail.source == .claude ? override : nil)
+            for reader in work {
+                snaps[reader.ref.path] = reader.refresh(contextWindowOverride: override)
             }
             Task { @MainActor in
                 self.busy = false
@@ -227,5 +159,45 @@ final class Monitor: ObservableObject {
                 self.stats = self.activePath.flatMap { snaps[$0] }
             }
         }
+    }
+
+    // MARK: Session browser
+
+    /// All sessions of one tool (including sub-agents), newest first.
+    func listSessions(tool: String, completion: @escaping ([SessionRef]) -> Void) {
+        guard let spec = ToolRegistry.spec(tool) else { completion([]); return }
+        browseQueue.async {
+            let refs = SessionDiscovery.sessions(for: spec, since: nil, limit: 300)
+            Task { @MainActor in completion(refs) }
+        }
+    }
+
+    /// Full stats for any session, parsed on demand.
+    func loadStats(_ ref: SessionRef, cached: Bool = true, completion: @escaping (SessionStats?) -> Void) {
+        if cached, let s = allStats[ref.path] { completion(s); return }
+        let override = claudeContextWindow > 0 ? claudeContextWindow : nil
+        browseQueue.async {
+            let s = Readers.make(ref)?.refresh(contextWindowOverride: override)
+            Task { @MainActor in completion(s) }
+        }
+    }
+
+    /// Most recently written session of any supported tool (for `--dump`).
+    nonisolated static func latestForDump() -> String? {
+        ToolScanner.scan().filter(\.supported)
+            .flatMap { SessionDiscovery.sessions(for: $0.spec, since: Date().addingTimeInterval(-86400), limit: 5) }
+            .filter { !$0.isSubagent }
+            .max { $0.modified < $1.modified }?.path
+    }
+
+    // MARK: Screenshots
+
+    /// Screenshot mode: show the given sessions instead of real ones (no polling).
+    func loadDemo(tools: [DetectedTool], sessions: [SessionRef], stats: [String: SessionStats]) {
+        demo = true
+        self.tools = tools
+        self.sessions = sessions
+        allStats = stats
+        self.stats = sessions.first.flatMap { stats[$0.path] }
     }
 }

@@ -3,7 +3,6 @@ import Foundation
 /// Parses one JSONL line at a time. Implementations read only metadata fields
 /// (timestamps, token usage, model, cwd) and never keep message content.
 protocol SessionParser: AnyObject {
-    var source: AgentSource { get }
     var acc: SessionAccumulator { get }
     func consume(_ obj: [String: Any])
 }
@@ -20,6 +19,11 @@ enum J {
 
     /// Fast parser for "2026-10-13T03:00:23.999Z" (UTC). Falls back to ISO8601DateFormatter.
     static func date(_ v: Any?) -> Date? {
+        if let n = v as? NSNumber {
+            // Epoch milliseconds or seconds.
+            let d = n.doubleValue
+            return d > 0 ? Date(timeIntervalSince1970: d > 1e11 ? d / 1000 : d) : nil
+        }
         guard let s = v as? String else { return nil }
         let u = Array(s.utf8)
         if u.count >= 20, u[4] == 45, u[7] == 45, u[10] == 84, u[13] == 58, u[16] == 58 {
@@ -61,7 +65,6 @@ enum J {
 // speed is measured end-to-end (from the preceding user/tool_result entry).
 
 final class ClaudeParser: SessionParser {
-    let source = AgentSource.claude
     private(set) var acc = SessionAccumulator()
 
     func consume(_ o: [String: Any]) {
@@ -131,7 +134,6 @@ final class ClaudeParser: SessionParser {
 // `started_at_ms`, which gives a real first-output time (TTFT).
 
 final class CodexParser: SessionParser {
-    let source = AgentSource.codex
     private(set) var acc = SessionAccumulator()
 
     private var pendingStart: (Date, BoundaryKind?)?
@@ -249,25 +251,30 @@ final class CodexParser: SessionParser {
 // MARK: - Incremental file tail
 
 /// Reads only bytes appended since the last call. If the file shrinks (rewritten), starts over.
-final class SessionTail: @unchecked Sendable { // only touched on the serial parse queue
-    let path: String
-    let source: AgentSource
+final class JSONLReader: SessionReader, @unchecked Sendable { // only touched on the serial parse queue
+    let ref: SessionRef
+    private let path: String
+    private let makeParser: () -> SessionParser
     private(set) var parser: SessionParser
     private var offset: UInt64 = 0
     private var remainder = Data()
-    private(set) var lastSize: UInt64 = 0
 
-    init(path: String, source: AgentSource) {
+    init(ref: SessionRef, path: String, makeParser: @escaping () -> SessionParser) {
+        self.ref = ref
         self.path = path
-        self.source = source
-        self.parser = Self.makeParser(source)
+        self.makeParser = makeParser
+        self.parser = makeParser()
     }
 
-    private static func makeParser(_ s: AgentSource) -> SessionParser {
-        switch s {
-        case .claude: return ClaudeParser()
-        case .codex: return CodexParser()
-        }
+    func refresh(contextWindowOverride: Int?) -> SessionStats {
+        poll()
+        let isClaude = ref.source == .claude
+        var s = parser.acc.snapshot(source: ref.source, path: ref.path,
+                                    contextWindowOverride: isClaude ? contextWindowOverride : nil,
+                                    estimateContextWindow: isClaude)
+        if s.title == nil { s.title = ref.title }
+        if s.cwd == nil { s.cwd = ref.cwd }
+        return s
     }
 
     /// Returns true if new data was consumed.
@@ -276,11 +283,10 @@ final class SessionTail: @unchecked Sendable { // only touched on the serial par
         guard let attrs = try? FileManager.default.attributesOfItem(atPath: path),
               let size = (attrs[.size] as? NSNumber)?.uint64Value else { return false }
         if size < offset {
-            parser = Self.makeParser(source)
+            parser = makeParser()
             offset = 0
             remainder = Data()
         }
-        lastSize = size
         guard size > offset, let fh = FileHandle(forReadingAtPath: path) else { return false }
         defer { try? fh.close() }
         do {

@@ -21,59 +21,69 @@ enum PreviewRenderer {
         }
         guard let s = monitor.stats else { print("no session found"); return }
 
-        func save<V: View>(_ name: String, _ view: V, background: Color = Color(white: 0.08)) {
-            let r = ImageRenderer(content: view.padding(12).background(background).environment(\.colorScheme, .dark))
-            r.scale = 2
-            guard let img = r.nsImage, let tiff = img.tiffRepresentation,
-                  let png = NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:]) else { return }
-            try? png.write(to: dir.appendingPathComponent(name))
-            print("wrote \(name)")
+        // Glass can't blur a real desktop here: draw it as a tinted fill over a painted wallpaper.
+        // Real windows (not ImageRenderer) so AppKit controls like switches and pickers show up.
+        func save<V: View>(_ name: String, _ view: V, wallpaper: Bool = true) {
+            let content = view
+                .padding(28)
+                .background(wallpaper ? AnyView(Wallpaper()) : AnyView(Color(white: 0.08)))
+                .environment(\.colorScheme, .dark)
+                .environment(\.staticGlass, true)
+                .environmentObject(monitor)
+                .fixedSize()
+            let probe = NSHostingView(rootView: content)
+            snapshot(content, size: probe.fittingSize, wait: 0.6, to: dir.appendingPathComponent(name))
         }
 
-        // The floating bar with its speed card open, on a desktop-like backdrop.
-        let hero = VStack(alignment: .leading, spacing: 8) {
-            CardFor(seg: .speed, s: s)
-                .padding(16)
-                .background(hudBackground(radius: 14))
+        // The floating bar with its speed card open.
+        let hero = VStack(alignment: .leading, spacing: -20) {
+            HUDDetailCard(seg: .speed, s: s).padding(16)
             HStack(spacing: 4) {
-                HStack(spacing: 5) {
-                    Image(systemName: "sparkle").font(.system(size: 10, weight: .semibold))
-                    Text(s.model ?? "").font(.system(size: 11.5))
-                    Image(systemName: "chevron.up.chevron.down").font(.system(size: 8, weight: .semibold))
+                HStack(spacing: 7) {
+                    Image(systemName: s.source.symbol).font(.system(size: 12, weight: .medium))
+                    Text(s.model ?? "").font(.system(size: 12.5))
+                    Image(systemName: "chevron.up.chevron.down").font(.system(size: 9, weight: .semibold))
                 }
-                .foregroundStyle(.tertiary)
-                .padding(.horizontal, 8)
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 12)
+                Rectangle().fill(Color.white.opacity(0.12)).frame(width: 1, height: 20)
                 StatusBarView(stats: s, active: .speed)
             }
-            .padding(.horizontal, 6)
-            .padding(.vertical, 4)
-            .background(hudBackground(radius: 11))
+            .padding(6)
+            .glassSurface(Capsule())
+            .padding(16)
         }
-        .padding(28)
-        .fixedSize()
-        save("hud.png", hero, background: Color(red: 0.16, green: 0.20, blue: 0.27))
+        save("hud.png", hero)
 
-        save("bar.png", StatusBarView(stats: s, active: .speed).fixedSize())
-        save("sessions.png", SessionListView(compact: false).environmentObject(monitor)
-            .padding(12).frame(width: 360)
-            .background(RoundedRectangle(cornerRadius: 14).fill(Color(white: 0.13))))
+        save("bar.png", StatusBarView(stats: s, active: .speed).padding(6).glassSurface(Capsule()))
+        save("sessions.png", SessionListView(compact: false)
+            .padding(14).frame(width: 372)
+            .glassSurface(RoundedRectangle(cornerRadius: 28, style: .continuous)))
         let popover = { (m: MenuBarModule) in
-            ModulePopoverView(module: m, close: {}).environmentObject(monitor)
-                .background(RoundedRectangle(cornerRadius: 12).fill(Color(white: 0.2)))
+            ModulePopoverView(module: m, close: {})
+                .glassSurface(RoundedRectangle(cornerRadius: 26, style: .continuous))
         }
         save("popover-speed.png", popover(.speed))
         save("popover-tokens.png", popover(.tokens))
         save("popover-context.png", popover(.context))
         save("popover-session.png", popover(.session))
         for (name, seg) in [("speed.png", Segment.speed), ("tokens.png", .tokens), ("context.png", .context)] {
-            save(name, CardFor(seg: seg, s: s).padding(16)
-                .background(RoundedRectangle(cornerRadius: 14).fill(Color(white: 0.13))))
+            save(name, HUDDetailCard(seg: seg, s: s))
+        }
+
+        // The session browser ("更多会话") window.
+        if !demo, let ref = monitor.sessions.first, let st = monitor.allStats[ref.path] {
+            save("browser-detail.png", SessionDetailView(ref: ref, s: st).environmentObject(monitor).frame(width: 460))
+        }
+        if !demo {
+            snapshot(SessionBrowserView(preselectTool: "deepseek-harness").environmentObject(monitor), size: NSSize(width: 980, height: 620),
+                     wait: 2.5, to: dir.appendingPathComponent("browser.png"))
         }
 
         // Form uses AppKit controls, which ImageRenderer can't draw: snapshot a real hosting view instead.
-        let host = NSHostingView(rootView: SettingsView()
+        let host = NSHostingView(rootView: SettingsView(page: .display)
             .environmentObject(monitor).environmentObject(HUDController.shared).environmentObject(MenuBarModules.shared))
-        let win = NSWindow(contentRect: NSRect(x: -3000, y: 0, width: 460, height: demo ? 1170 : 1100),
+        let win = NSWindow(contentRect: NSRect(x: -3000, y: 0, width: 780, height: 640),
                            styleMask: [.titled], backing: .buffered, defer: false)
         win.appearance = NSAppearance(named: .darkAqua)
         win.contentView = host
@@ -86,6 +96,38 @@ enum PreviewRenderer {
         }
         win.orderOut(nil)
     }
+}
+
+/// A dark desktop for screenshots, so glass surfaces have something to sit on.
+struct Wallpaper: View {
+    var body: some View {
+        ZStack {
+            Color(red: 0.04, green: 0.06, blue: 0.09)
+            RadialGradient(colors: [Color(red: 0.14, green: 0.31, blue: 0.48), .clear],
+                           center: UnitPoint(x: 0.12, y: 0.18), startRadius: 0, endRadius: 520)
+            RadialGradient(colors: [Color(red: 0.29, green: 0.20, blue: 0.45), .clear],
+                           center: UnitPoint(x: 0.9, y: 0.2), startRadius: 0, endRadius: 460)
+            RadialGradient(colors: [Color(red: 0.05, green: 0.36, blue: 0.36), .clear],
+                           center: UnitPoint(x: 0.55, y: 1.05), startRadius: 0, endRadius: 520)
+        }
+    }
+}
+
+@MainActor
+private func snapshot<V: View>(_ view: V, size: NSSize, wait: TimeInterval, to url: URL) {
+    let host = NSHostingView(rootView: view)
+    let win = NSWindow(contentRect: NSRect(x: -3000, y: 0, width: size.width, height: size.height),
+                       styleMask: [.titled], backing: .buffered, defer: false)
+    win.appearance = NSAppearance(named: .darkAqua)
+    win.contentView = host
+    win.orderFrontRegardless()
+    RunLoop.main.run(until: Date().addingTimeInterval(wait))
+    if let rep = host.bitmapImageRepForCachingDisplay(in: host.bounds) {
+        host.cacheDisplay(in: host.bounds, to: rep)
+        try? rep.representation(using: .png, properties: [:])?.write(to: url)
+        print("wrote \(url.lastPathComponent)")
+    }
+    win.orderOut(nil)
 }
 
 /// Made-up sessions for screenshots.
@@ -105,6 +147,9 @@ enum DemoData {
             s.recentTPS = tps
             s.lastTPS = tps * 1.06
             s.sessionTPS = tps * 0.93
+            let wobble: [Double] = [-0.14, -0.07, -0.12, -0.02, 0.05, -0.04, -0.10, 0.0, 0.08, 0.03,
+                                    -0.04, 0.01, 0.06, -0.03, -0.09, 0.04, 0.07, -0.01, 0.02, 0.0]
+            s.stepTPS = wobble.map { tps * (1 + $0) }
             s.avgTTFT = ttft
             s.ttftAvailable = ttft != nil
             s.modelTime = Double(steps) * 8.7
@@ -121,7 +166,7 @@ enum DemoData {
                 s.rateLimitPrimary = RateLimitWindow(usedPercent: 18, windowMinutes: 300, resetsAt: nil)
                 s.rateLimitSecondary = RateLimitWindow(usedPercent: 41, windowMinutes: 10080, resetsAt: nil)
             }
-            let ref = SessionRef(path: path, source: source, modified: s.lastActivity!, cwd: s.cwd)
+            let ref = SessionRef(path: path, source: source, locator: .file(path), modified: s.lastActivity!, cwd: s.cwd)
             return (ref, s)
         }
         let rows = [
@@ -133,9 +178,12 @@ enum DemoData {
                  ctx: 61_000, window: 200_000),
             make(.codex, "data-pipeline", "gpt-6.1-sol", ago: 720, turns: 2, steps: 47, tps: 36.2,
                  ctx: 98_000, window: 258_400, generating: 41, ttft: 3.1),
-            make(.claude, "docs-site", "claude-haiku-5-5", ago: 3_900, turns: 4, steps: 31, tps: 245,
-                 ctx: 22_000, window: 200_000),
+            make(AgentSource(id: "opencode"), "docs-site", "deepseek-v4", ago: 240, turns: 4, steps: 31, tps: 245,
+                 ctx: 22_000, window: 128_000),
         ]
-        monitor.loadDemo(sessions: rows.map(\.0), stats: Dictionary(uniqueKeysWithValues: rows.map { ($0.0.path, $0.1) }))
+        let tools = ["claude", "codex", "opencode", "codebuddy", "cursor"].compactMap(ToolRegistry.spec).map {
+            DetectedTool(spec: $0, hasApp: $0.id != "opencode", hasCLI: $0.id != "cursor", hasData: true)
+        }
+        monitor.loadDemo(tools: tools, sessions: rows.map(\.0), stats: Dictionary(uniqueKeysWithValues: rows.map { ($0.0.path, $0.1) }))
     }
 }

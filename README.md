@@ -1,6 +1,6 @@
 # AgentPulse · Agent 速度表
 
-**给 Claude Code 和 Codex 加上实时的 tok/s 速度表。** 这是一个 macOS 菜单栏小工具，能实时显示 agent 当前对话的模型输出速度、TTFT、token 用量、缓存命中率和上下文占用，同时开着多个 agent 也能逐个切换查看。
+**给你电脑上的 agent 工具加上实时的 tok/s 速度表。** 这是一个 macOS 菜单栏小工具，启动时自动扫描本机装了哪些 agent 工具（桌面端和 CLI），实时显示它们当前对话的模型输出速度、TTFT、token 用量、缓存命中率和上下文占用。同时开着多个 agent 也能逐个切换查看，历史会话按工具分组浏览。
 
 样式参考 DeepSeek harness 底部的状态栏。它只读取本机日志：不联网，不碰账号，不改任何配置。
 
@@ -18,7 +18,7 @@
 <details>
 <summary>设置窗口</summary>
 
-<img src="docs/screenshots/settings.png" width="460" alt="设置窗口">
+<img src="docs/screenshots/settings.png" width="640" alt="设置窗口">
 
 </details>
 
@@ -32,12 +32,32 @@
 
 ## 支持的工具
 
-| 工具 | 日志位置 | 说明 |
-|---|---|---|
-| Claude Code 命令行版 / Claude 桌面版的 Code 标签页 | `~/.claude/projects/*/*.jsonl` | 日志不记录首 token 时间，速度里包含首 token 的等待，数值略偏低 |
-| Codex 命令行版 / Codex 桌面版 | `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` | 有首个输出的时间，可以显示真实的 TTFT |
+AgentPulse 启动时会扫描一遍本机：`/Applications`、`~/Applications` 里的应用，常见 CLI 安装目录（Homebrew、npm/nvm/fnm、bun、cargo 等），以及各工具的数据目录。扫描只判断这些路径是否存在，不运行任何程序。之后哪个工具有了新会话，就会自动出现在会话列表里。设置窗口和“更多会话”窗口里都可以手动重新扫描。
 
-不支持：Claude 桌面版的普通聊天（Code 标签页之外的对话），以及不在本地写日志的 agent 工具。原因见下文“合规与安全”。
+能读取速度的工具：
+
+| 工具 | 本地日志位置 | 说明 |
+|---|---|---|
+| Claude Code（命令行版 / Claude 桌面版的 Code 标签页） | `~/.claude/projects` | 日志不记录首 token 时间，速度里含首 token 等待，略偏低 |
+| Codex（命令行版 / 桌面版） | `~/.codex/sessions` | 有首个输出时间，能显示真实 TTFT |
+| DeepSeek Harness | `~/.dsh/storages/session_projcache/sessions` | 直接用它自己统计好的解码时间和 token 数，和它的状态栏一致 |
+| opencode | `~/.local/share/opencode/opencode.db` | 只读方式打开 SQLite，只查会话表和消息表 |
+| MiMo Code | `~/.local/share/mimocode/mimocode.db` | 同 opencode |
+| CodeBuddy | `~/.codebuddy/projects`、`~/.codebuddycn/projects` | |
+| WorkBuddy | `~/.workbuddy/projects` | |
+| StepCode | `~/.stepcode/agent/sessions` | |
+| pi | `~/.pi/agent/sessions` | |
+| ZCode | `~/.zcode/cli/rollout` | 生成标题等辅助调用不计入 |
+| Antigravity | `~/.gemini/antigravity*/brain` | 日志只有每步开始时间，**只能显示 token，不能算速度** |
+
+能检测到、但暂时读不了速度的工具，会在“更多会话”窗口里列出并注明原因：
+
+- **本地日志不记录 token 用量**：Kimi、Command Code、Grok CLI。
+- **token 用量全是 0**：Qoder。
+- **本机没有会话样本，暂未适配**：Gemini CLI、Qwen Code、iFlow CLI。
+- **没有在本机找到可读的会话记录**：Cursor、Trae、Kiro、Windsurf、GitHub Copilot CLI、Factory Droid、Crush、Goose、Devin、MiniMax Code、Aider、Cline、OpenHands。这些工具的会话一般存在云端或加密存储里。
+
+另外 Claude 桌面版的普通聊天（Code 标签页之外的对话）也不支持，因为它不在本地写日志。原因见下文“合规与安全”。
 
 ## 安装
 
@@ -63,12 +83,24 @@
 
 ### 切换会话
 
-后台会同时解析最近活跃的 8 个会话，每个会话的速度都在实时更新。
+会话列表**只显示运行中的会话**，也就是最近 10 分钟内有写入、或者正在等模型回复的会话。所有运行中的会话都在后台同时解析，速度实时更新。
 
-- 会话列表里每一行显示：项目名、工具、模型、实时 tok/s 和上下文占用。正在生成的会话前面有绿点，后面显示已经生成了多久。
-- 点某一行就固定查看它，模型名后面会出现 📌。
-- 点“自动跟随最新会话”回到自动模式，这时显示最近有写入的那个会话。
+- 每一行显示工具图标、项目名、模型、实时 tok/s 和上下文进度条。正在生成的会话图标右下角有绿点，后面显示已经生成了多久。
+- 点某一行就固定查看它，会话名旁边会出现图钉。
+- 打开“自动跟随最新会话”开关回到自动模式，这时显示最近有写入的那个会话；“跟随范围”可以把自动跟随限定在某一个工具。
 - 会话列表在三个地方都有：悬浮条左侧的模型名、任意菜单栏模块详情页顶部的会话名（点一下展开）、设置窗口。
+
+Codex 的自动审查（`codex-auto-review`）会另开一个子代理会话。它不会出现在运行中列表里，也不会被自动跟随，所以不会和主会话来回切换。
+
+### 更多会话
+
+会话列表底部的“更多会话…”会打开一个独立窗口，分三栏：
+
+1. **工具**：检测到的所有 agent 工具，标明是桌面端、CLI 还是只有本地数据。读不了的工具单独分组，并写明原因。
+2. **会话**：所选工具的全部会话，按日期分组。子代理会话会标上“子代理”。
+3. **详情**：所选会话的速度、token、上下文统计。点“在悬浮条和菜单栏中查看”就固定到这个会话。
+
+历史会话是点开时才解析的，平时不占资源。
 
 ### 顶部菜单栏模块
 
@@ -76,14 +108,14 @@
 
 | 模块 | 菜单栏显示 | 点击后 |
 |---|---|---|
-| 会话 / 模型名 | `✦ claude-opus-5-5 📌` | 会话列表，可以切换 |
+| 会话 / 模型名 | `✦ claude-opus-5-5`（固定会话时图标换成图钉） | 会话列表，可以切换 |
 | 速度 | `110 tok/s`（只有文字，不带图标） | 会话统计：模型用时、工具用时、TTFT、各种速度 |
 | Token 用量 | `▤ 4.3M · 97.3%` | Token 明细：未缓存输入、缓存读写、输出；Codex 还会显示额度窗口 |
 | 上下文占用 | `◔ 78%` | 上下文进度条、模型和窗口大小 |
 
 默认只开“速度”。模块至少要保留一个，因为详情页和设置要从模块进入。按住 ⌘ 拖动可以调整这些模块在菜单栏里的顺序。
 
-每个模块的详情页顶部是“当前会话名 ⌄”，点一下就能展开会话列表直接切换；右上角的 ⚙︎ 用来打开设置窗口。
+每个模块的详情页顶部是当前会话按钮，点一下就能展开会话列表直接切换；右边的齿轮按钮用来打开设置窗口。下面的“速度 / Token / 上下文”切换栏可以在三种详情之间切换，所以只开一个模块也能看到全部数据。
 
 > 带刘海的 MacBook 上，如果菜单栏图标太多，macOS 会把放不下的图标藏到刘海后面。开了模块却看不到时，可以退出几个不常用的菜单栏应用，或者按住 ⌘ 把模块拖到靠右的位置。
 
@@ -105,14 +137,15 @@
 
 会做的事：
 
-- **只读**方式读取 `~/.claude/projects` 和 `~/.codex/sessions`。
-- 只取时间戳、token 用量、模型名、工作目录、上下文窗口这些元数据。
+- 以**只读**方式读取上文表格里列出的日志目录。SQLite 数据库用只读模式打开，只查会话表和消息表，不碰账号或凭据相关的表。
+- 扫描已安装的工具时，只检查应用、可执行文件、数据目录是否存在，不运行它们，也不读它们的配置。
+- 只取时间戳、token 用量、模型名、工作目录、会话标题、上下文窗口这些元数据。
 - 消息正文、工具输入和输出一律不保存、不显示、不上传。这些日志里有你完整的对话，包括你粘贴进去的密钥。
 
 不会做的事（源码里没有 `URLSession`、网络、钥匙串或写文件相关的调用）：
 
 - 不联网，不调用任何 API，包括未公开的用量和额度接口。
-- 不读 `~/.codex/auth.json`、钥匙串或 OAuth token，也从不以你的身份认证。
+- 不读 `~/.codex/auth.json` 等任何工具的凭据文件、钥匙串或 OAuth token，也从不以你的身份认证。
 - 不搭本地代理、不做中间人截获，不改 agent 工具的 `base_url` 等任何配置。
 - 不向 Electron 或桌面应用注入代码、不修改它们，也不借助辅助功能或屏幕录制去读界面。
 - 不向模型发请求，所以不消耗你的额度。
@@ -134,6 +167,8 @@ scripts/build-app.sh --install  # 另外安装到 /Applications
 调试命令（不启动界面）：
 
 ```bash
+.build/release/AgentPulse --tools                # 列出检测到的 agent 工具和会话数
+.build/release/AgentPulse --dump-tool codex 3    # 输出某个工具最近 3 个会话的统计
 .build/release/AgentPulse --dump                 # 输出最近会话的统计
 .build/release/AgentPulse --dump <session.jsonl> # 指定某个日志文件
 .build/release/AgentPulse --render ./preview          # 用你的真实会话把界面渲染成 PNG
@@ -144,53 +179,26 @@ scripts/build-app.sh --install  # 另外安装到 /Applications
 
 | 文件 | 作用 |
 |---|---|
+| `Sources/AgentPulse/Tools.swift` | agent 工具清单和安装检测 |
+| `Sources/AgentPulse/Readers.swift` | 各工具的会话发现，JSON / SQLite 读取 |
 | `Sources/AgentPulse/Parsers.swift` | Claude Code / Codex 日志解析，增量读取文件尾部 |
+| `Sources/AgentPulse/MoreParsers.swift` | CodeBuddy、StepCode、ZCode、Antigravity 等工具的日志解析 |
 | `Sources/AgentPulse/Model.swift` | 每一步的记录和各项统计的计算 |
-| `Sources/AgentPulse/Monitor.swift` | 会话发现，多会话同时跟踪 |
+| `Sources/AgentPulse/Monitor.swift` | 运行中会话的跟踪和自动跟随 |
+| `Sources/AgentPulse/SessionBrowser.swift` | “更多会话”窗口 |
 | `Sources/AgentPulse/HUD.swift` | 悬浮条和详情卡窗口 |
 | `Sources/AgentPulse/MenuBarModules.swift` | 顶部菜单栏的各个独立模块 |
+| `Sources/AgentPulse/DesignKit.swift` | 液态玻璃表面、速度走势线、统计卡片等共用界面组件 |
 | `Sources/AgentPulse/Views.swift` | 状态条、详情卡、会话列表等界面 |
 | `Sources/AgentPulse/App.swift` | 应用入口和独立的设置窗口 |
 | `scripts/build-app.sh` / `scripts/make-icon.swift` | 打包脚本和图标生成 |
 
 ### 接入新工具
 
-参照 `Parsers.swift` 给新工具的本地日志格式写一个 `SessionParser`，再在 `SessionDiscovery` 里加上它的日志目录。前提是这个工具自己会把日志写在本地。
+在 `Tools.swift` 的 `ToolRegistry` 里加一条工具描述（应用名、CLI 名、数据目录）。如果它的日志是 JSONL，就参照 `MoreParsers.swift` 写一个 `SessionParser`；如果是其他格式，就在 `Readers.swift` 里写一个 `SessionReader`。前提是这个工具自己会把带 token 用量的日志写在本地。
 
 ## 许可证
 
 [Apache License 2.0](LICENSE)
 
 本项目与 Anthropic、OpenAI、DeepSeek 没有关联。Claude、Codex 等名称归各自所有者所有，这里只用来说明本工具兼容哪些软件。
-
-## 更新记录
-
-### 0.5.0
-- 开源发布到 GitHub，采用 Apache-2.0 许可证。README 加入用演示数据生成的截图。
-- 修复悬浮条在空间不够时“3 轮 223 步”被截断的问题。
-- 去掉菜单栏里单独的设置图标，节省菜单栏空间。
-- 速度模块只显示文字“xxx tok/s”，不再带图标。
-- 每个模块的详情页新增：顶部的会话名可以点开直接切换会话，右上角 ⚙︎ 打开设置。
-- 设置改成独立窗口，不再挂在菜单栏下面。悬浮条右键菜单、再次打开 App 也能进入设置。
-- 菜单栏模块至少保留一个，避免详情和设置都没有入口。
-
-### 0.4.0
-- 新增顶部菜单栏模块：会话/模型名、速度、Token 用量、上下文四个模块各自独立，可以分别开关，点击出现详情弹窗。
-- 主菜单栏图标改为只显示图标，面板里换成精简概要，会话列表最多显示 5 行。
-- 打包成带图标的 `.app` 和 `.dmg`。
-- README 改为中文。
-
-### 0.3.0
-- 点击悬浮条左侧的模型名可以选择查看哪个会话，列表里显示每个会话的实时速度、上下文占用和生成状态。
-- 后台同时跟踪最近 8 个会话，切换是即时的。
-- 修复被中断的会话仍然显示“生成中”的问题：会识别 Codex 的任务完成和中断，以及 Claude 的用户中断和 API 报错。
-
-### 0.2.0
-- 修复鼠标靠近悬浮条时不停抖动的问题。原因是悬停时弹出详情卡、窗口跟着变大，又让鼠标“离开”，形成循环。
-  - 现在悬停不再触发任何变化，详情卡改成点击后在独立的小窗口里打开。
-  - 速度和计时区域的宽度固定，悬浮条尺寸不再随计时变化。
-
-### 0.1.0
-- 第一版：菜单栏速度显示，以及仿 DeepSeek 样式的悬浮条（轮/步/速度、Token/缓存命中、上下文占用和三张详情卡）。
-- 支持 Claude Code（含 Claude 桌面版的 Code 标签页）和 Codex（命令行版和桌面版）的本地日志。
-- 用真实会话验证过解析：18MB 的日志 0.18 秒解析完成。
