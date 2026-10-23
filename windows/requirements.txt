@@ -1,0 +1,6 @@
+# AgentPulse Windows 可选依赖
+# 核心功能（桌面悬浮条、本地 Web 设置看板、CLI 速度表）仅使用 Python 标准库，无需额外安装任何库。
+# 如需系统托盘支持或独立打包为 .exe，可安装以下扩展：
+pystray>=0.19.5
+pillow>=10.0.0
+pyinstaller>=6.0.0

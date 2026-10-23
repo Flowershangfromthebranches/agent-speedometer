@@ -6,7 +6,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-VERSION="1.0.1"
+VERSION="1.0.3"
 
 # 当前开发者目录是 Command Line Tools 时（其 SwiftPM 可能损坏），仅对本脚本改用完整 Xcode。
 if [[ -z "${DEVELOPER_DIR:-}" && -d /Applications/Xcode.app ]] && xcode-select -p | grep -q CommandLineTools; then
@@ -18,15 +18,18 @@ BIN="$(xcrun swift build -c release --show-bin-path)/AgentPulse"
 
 WORK=.build/package
 APP=dist/AgentPulse.app
-rm -rf "$WORK" "$APP"
-mkdir -p "$WORK" "$APP/Contents/MacOS" "$APP/Contents/Resources"
-cp "$BIN" "$APP/Contents/MacOS/AgentPulse"
+STAGED_APP="$WORK/AgentPulse.app"
+# Finder may cache a generic icon if it sees a partially assembled .app. Keep
+# the published app intact until its replacement is complete and signed.
+rm -rf "$WORK"
+mkdir -p "$STAGED_APP/Contents/MacOS" "$STAGED_APP/Contents/Resources" dist
+cp "$BIN" "$STAGED_APP/Contents/MacOS/AgentPulse"
 
 # 应用图标
 xcrun swift scripts/make-icon.swift "$WORK/AppIcon.iconset"
-iconutil -c icns "$WORK/AppIcon.iconset" -o "$APP/Contents/Resources/AppIcon.icns"
+iconutil -c icns "$WORK/AppIcon.iconset" -o "$STAGED_APP/Contents/Resources/AppIcon.icns"
 
-cat > "$APP/Contents/Info.plist" <<PLIST
+cat > "$STAGED_APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -35,7 +38,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundleDisplayName</key><string>AgentPulse</string>
   <key>CFBundleIdentifier</key><string>local.agentpulse</string>
   <key>CFBundleExecutable</key><string>AgentPulse</string>
-  <key>CFBundleIconFile</key><string>AppIcon</string>
+  <key>CFBundleIconFile</key><string>AppIcon.icns</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>${VERSION}</string>
   <key>CFBundleVersion</key><string>${VERSION}</string>
@@ -48,7 +51,16 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 PLIST
 
 # 本地临时签名（ad-hoc），未做 Apple 公证
-codesign --force --sign - "$APP" >/dev/null
+codesign --force --sign - "$STAGED_APP" >/dev/null
+
+# Swap complete bundles atomically on the same volume, then refresh only this
+# app's Launch Services entry; no global icon-cache reset or Finder restart.
+xcrun swift scripts/publish-app.swift "$STAGED_APP" "$APP"
+touch "$APP"
+LSREGISTER=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
+if [[ -x "$LSREGISTER" ]]; then
+  "$LSREGISTER" -f "$APP"
+fi
 
 # DMG：包含 App 和“应用程序”快捷方式
 DMG="dist/AgentPulse-${VERSION}.dmg"

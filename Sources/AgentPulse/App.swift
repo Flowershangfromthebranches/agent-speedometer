@@ -66,14 +66,14 @@ enum SettingsWindow {
 
     static func show() {
         if window == nil {
-            let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 780, height: 580),
+            let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 860, height: 660),
                              styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
                              backing: .buffered, defer: false)
             w.title = "AgentPulse 设置"
             w.titlebarAppearsTransparent = true
             w.titleVisibility = .hidden
             w.isReleasedWhenClosed = false
-            w.contentMinSize = NSSize(width: 680, height: 460)
+            w.contentMinSize = NSSize(width: 720, height: 500)
             w.contentView = NSHostingView(rootView: SettingsView()
                 .environmentObject(Monitor.shared)
                 .environmentObject(HUDController.shared)
@@ -88,12 +88,13 @@ enum SettingsWindow {
 }
 
 enum SettingsPage: String, CaseIterable, Identifiable {
-    case current, sessions, tools, display, about
+    case current, usage, sessions, tools, display, about
     var id: String { rawValue }
 
     var title: String {
         switch self {
         case .current: return "当前会话"
+        case .usage: return "用量统计"
         case .sessions: return "会话与跟随"
         case .tools: return "Agent 工具"
         case .display: return "菜单栏与悬浮条"
@@ -104,6 +105,7 @@ enum SettingsPage: String, CaseIterable, Identifiable {
     var symbol: String {
         switch self {
         case .current: return "gauge.with.dots.needle.67percent"
+        case .usage: return "chart.bar.xaxis"
         case .sessions: return "list.bullet"
         case .tools: return "chevron.left.forwardslash.chevron.right"
         case .display: return "menubar.rectangle"
@@ -115,9 +117,15 @@ enum SettingsPage: String, CaseIterable, Identifiable {
 struct SettingsView: View {
     @EnvironmentObject var monitor: Monitor
     @State private var page: SettingsPage?
+    private let usagePreviewRange: UsageRange?
+    private let usagePreviewTool: String?
 
-    init(page: SettingsPage = .current) {
+    init(page: SettingsPage = .current,
+         usagePreviewRange: UsageRange? = nil,
+         usagePreviewTool: String? = nil) {
         _page = State(initialValue: page)
+        self.usagePreviewRange = usagePreviewRange
+        self.usagePreviewTool = usagePreviewTool
     }
 
     var body: some View {
@@ -159,6 +167,7 @@ struct SettingsView: View {
             Group {
                 switch current {
                 case .current: CurrentSessionPage()
+                case .usage: UsagePage(previewRange: usagePreviewRange, previewTool: usagePreviewTool)
                 case .sessions: SessionsPage()
                 case .tools: ToolsPage()
                 case .display: DisplayPage()
@@ -168,7 +177,7 @@ struct SettingsView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .toggleStyle(.switch)
-        .frame(minWidth: 680, minHeight: 460)
+        .frame(minWidth: 720, minHeight: 500)
     }
 }
 
@@ -221,10 +230,10 @@ struct SessionOverview: View {
             }
             Grid(horizontalSpacing: 10, verticalSpacing: 10) {
                 GridRow {
-                    OverviewTile(label: "输出速度（近 5 步）", value: Fmt.tpsNumber(s.recentTPS), unit: "tok/s")
-                    OverviewTile(label: "Token · 缓存命中", value: Fmt.compactTokens(s.totalTokens),
-                                 unit: Fmt.percent(s.cacheHitRate), unitColor: Theme.accent)
-                    OverviewTile(label: "上下文 · \(Fmt.compactTokens(s.contextTokens)) / \(s.contextWindow.map(Fmt.compactTokens) ?? "?")",
+                    OverviewTile(label: "\(s.speedTitle)（近 5 步）", value: s.speedNumber(s.displayRecentSpeed), unit: s.speedUnit)
+                    OverviewTile(label: s.usesCredits ? "实际 Credits 消耗" : "Token · 缓存命中", value: s.usageValue,
+                                 unit: s.usageUnit, unitColor: Theme.accent)
+                    OverviewTile(label: s.contextTitle,
                                  value: Fmt.percent(s.contextFraction, digits: 0), bar: s.contextFraction)
                 }
             }

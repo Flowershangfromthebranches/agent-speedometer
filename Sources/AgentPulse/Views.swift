@@ -42,8 +42,8 @@ struct StatusBarView: View {
             segment(.tokens, label: "Token 用量") {
                 Image(systemName: "cylinder.split.1x2").foregroundStyle(.secondary)
                 if let s = stats {
-                    Text(Fmt.compactTokens(s.totalTokens)).fontWeight(.semibold)
-                    Text("· 缓存 \(Fmt.percent(s.cacheHitRate))").foregroundStyle(.secondary)
+                    Text(s.usageValue).fontWeight(.semibold)
+                    Text(s.usesCredits ? "Credits" : "· 缓存 \(Fmt.percent(s.cacheHitRate))").foregroundStyle(.secondary)
                 } else {
                     Text("—").foregroundStyle(.secondary)
                 }
@@ -87,10 +87,10 @@ struct SpeedText: View {
         HStack(spacing: 8) {
             LiveDot(on: stats.waitingSince != nil)
             HStack(alignment: .firstTextBaseline, spacing: 4) {
-                Text(Fmt.tpsNumber(stats.recentTPS)).font(.system(size: 15, weight: .semibold).monospacedDigit())
-                Text("tok/s").foregroundStyle(.secondary)
+                Text(stats.speedNumber(stats.displayRecentSpeed)).font(.system(size: 15, weight: .semibold).monospacedDigit())
+                Text(stats.speedUnit).foregroundStyle(.secondary)
             }
-            .frame(width: 84, alignment: .leading)
+            .frame(width: stats.usesCredits ? 128 : 84, alignment: .leading)
             Text("\(stats.turns) 轮 · \(stats.steps) 步").foregroundStyle(.secondary)
             Group {
                 if let w = stats.waitingSince {
@@ -119,19 +119,20 @@ struct SpeedHero: View {
             HStack(alignment: .bottom) {
                 VStack(alignment: .leading, spacing: 2) {
                     ActivityLabel(s: s)
-                    HeroNumber(value: Fmt.tpsNumber(s.recentTPS), unit: "tok/s")
+                    HeroNumber(value: s.speedNumber(s.displayRecentSpeed), unit: s.speedUnit)
                 }
                 Spacer(minLength: 12)
                 VStack(alignment: .trailing, spacing: 2) {
-                    Text("输出速度 · 近 5 步")
+                    Text("\(s.speedTitle) · 近 5 步")
                     Text("\(s.turns) 轮 · \(s.steps) 步")
                 }
                 .font(.system(size: 11.5).monospacedDigit())
                 .foregroundStyle(.secondary)
                 .padding(.bottom, 6)
             }
-            Sparkline(values: Array(s.stepTPS.suffix(24)), average: s.sessionTPS)
+            Sparkline(steps: Array(s.displayStepSpeeds.suffix(24)), average: s.displaySessionSpeed)
                 .frame(height: sparkHeight)
+                .id(s.path)
         }
     }
 }
@@ -147,19 +148,19 @@ struct SpeedDetail: View {
             switch layout {
             case .tiles:
                 LazyVGrid(columns: [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)], spacing: 8) {
-                    StatTile(label: "最近一步", value: Fmt.tpsNumber(s.lastTPS), unit: "tok/s")
-                    StatTile(label: "会话平均", value: Fmt.tpsNumber(s.sessionTPS), unit: "tok/s")
-                    StatTile(label: "模型用时", value: Fmt.duration(s.modelTime))
+                    StatTile(label: "最近一步", value: s.speedNumber(s.displayLastSpeed), unit: s.speedUnit)
+                    StatTile(label: "会话平均", value: s.speedNumber(s.displaySessionSpeed), unit: s.speedUnit)
+                    StatTile(label: s.usesCredits ? "请求用时（含等待）" : "模型用时", value: Fmt.duration(s.modelTime))
                     StatTile(label: "工具调用用时", value: Fmt.duration(s.toolTime))
                 }
                 InfoRow(label: "首 token 平均（TTFT）", value: ttft, dimValue: !s.ttftAvailable, divider: false)
                     .padding(.horizontal, 4)
             case .list:
                 VStack(spacing: 0) {
-                    InfoRow(label: "最近一步", value: Fmt.tps(s.lastTPS))
-                    InfoRow(label: "会话平均", value: Fmt.tps(s.sessionTPS))
+                    InfoRow(label: "最近一步", value: s.speedText(s.displayLastSpeed))
+                    InfoRow(label: "会话平均", value: s.speedText(s.displaySessionSpeed))
                     InfoRow(label: "首 token 平均（TTFT）", value: ttft, dimValue: !s.ttftAvailable)
-                    InfoRow(label: "模型用时", value: Fmt.duration(s.modelTime))
+                    InfoRow(label: s.usesCredits ? "请求用时（含等待）" : "模型用时", value: Fmt.duration(s.modelTime))
                     InfoRow(label: "工具调用用时", value: Fmt.duration(s.toolTime), divider: false)
                 }
                 .insetGroup()
@@ -181,61 +182,83 @@ struct TokenDetail: View {
     let s: SessionStats
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack(alignment: .bottom) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("本会话 Token 用量").font(.system(size: 12)).foregroundStyle(.secondary)
-                    HeroNumber(value: Fmt.compactTokens(s.totalTokens), unit: "tok", size: 46)
+        if s.usesCredits {
+            CreditsSessionDetail(s: s)
+        } else {
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(alignment: .bottom) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("本会话 Token 用量").font(.system(size: 12)).foregroundStyle(.secondary)
+                        HeroNumber(value: Fmt.compactTokens(s.totalTokens), unit: "tok", size: 46)
+                    }
+                    Spacer(minLength: 12)
+                    VStack(alignment: .trailing, spacing: 2) {
+                        Text("缓存命中").font(.system(size: 12)).foregroundStyle(.secondary)
+                        Text(Fmt.percent(s.cacheHitRate))
+                            .font(.system(size: 22, weight: .semibold).monospacedDigit())
+                            .foregroundStyle(Theme.accent)
+                    }
+                    .padding(.bottom, 4)
                 }
-                Spacer(minLength: 12)
-                VStack(alignment: .trailing, spacing: 2) {
-                    Text("缓存命中").font(.system(size: 12)).foregroundStyle(.secondary)
-                    Text(Fmt.percent(s.cacheHitRate))
-                        .font(.system(size: 22, weight: .semibold).monospacedDigit())
-                        .foregroundStyle(Theme.accent)
-                }
-                .padding(.bottom, 4)
-            }
-            .padding(.horizontal, 4)
-            .help(Fmt.tokens(s.totalTokens))
+                .padding(.horizontal, 4)
+                .help(Fmt.tokens(s.totalTokens))
 
-            TokenBar(slices: s.tokenSlices).padding(.horizontal, 4)
+                TokenBar(slices: s.tokenSlices).padding(.horizontal, 4)
 
-            VStack(spacing: 0) {
-                let slices = s.tokenSlices
-                ForEach(Array(slices.enumerated()), id: \.1.id) { i, sl in
-                    InfoRow(label: sl.label, value: Fmt.compactTokens(sl.value), dot: sl.color,
-                            divider: i < slices.count - 1)
-                        .help(Fmt.tokens(sl.value))
-                }
-            }
-            .insetGroup()
-
-            let limits = [s.rateLimitPrimary, s.rateLimitSecondary].compactMap { $0 }
-            if !limits.isEmpty {
                 VStack(spacing: 0) {
-                    ForEach(Array(limits.enumerated()), id: \.0) { i, p in
-                        HStack(spacing: 10) {
-                            Text("额度窗口 \(windowName(p.windowMinutes))").foregroundStyle(.secondary)
-                            Spacer(minLength: 12)
-                            MiniBar(fraction: p.usedPercent / 100, width: 60)
-                            Text(String(format: "%.0f%% 已用", p.usedPercent)).fontWeight(.medium)
-                                .frame(width: 64, alignment: .trailing)
-                        }
-                        .font(.system(size: 12.5).monospacedDigit())
-                        .frame(height: 38)
-                        .overlay(alignment: .bottom) {
-                            if i < limits.count - 1 { Rectangle().fill(Theme.hairline).frame(height: 1) }
-                        }
+                    let slices = s.tokenSlices
+                    ForEach(Array(slices.enumerated()), id: \.1.id) { i, sl in
+                        InfoRow(label: sl.label, value: Fmt.compactTokens(sl.value), dot: sl.color,
+                                divider: i < slices.count - 1)
+                            .help(Fmt.tokens(sl.value))
                     }
                 }
                 .insetGroup()
+
+                let limits = [s.rateLimitPrimary, s.rateLimitSecondary].compactMap { $0 }
+                if !limits.isEmpty {
+                    VStack(spacing: 0) {
+                        ForEach(Array(limits.enumerated()), id: \.0) { i, p in
+                            HStack(spacing: 10) {
+                                Text("额度窗口 \(windowName(p.windowMinutes))").foregroundStyle(.secondary)
+                                Spacer(minLength: 12)
+                                MiniBar(fraction: p.usedPercent / 100, width: 60)
+                                Text(String(format: "%.0f%% 已用", p.usedPercent)).fontWeight(.medium)
+                                    .frame(width: 64, alignment: .trailing)
+                            }
+                            .font(.system(size: 12.5).monospacedDigit())
+                            .frame(height: 38)
+                            .overlay(alignment: .bottom) {
+                                if i < limits.count - 1 { Rectangle().fill(Theme.hairline).frame(height: 1) }
+                            }
+                        }
+                    }
+                    .insetGroup()
+                }
             }
         }
     }
 
     private func windowName(_ m: Int) -> String {
         m >= 1440 ? "\(m / 1440)天" : (m >= 60 ? "\(m / 60)小时" : "\(m)分")
+    }
+}
+
+struct CreditsSessionDetail: View {
+    let s: SessionStats
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("实际 Credits 消耗").font(.system(size: 12)).foregroundStyle(.secondary)
+            HeroNumber(value: Fmt.creditsNumber(s.credits), unit: "Credits", size: 38)
+            VStack(spacing: 0) {
+                InfoRow(label: "已报告计费状态", value: "\(s.creditRequests) 次请求")
+                InfoRow(label: "计费数据缺失", value: "\(s.missingCreditRequests) 次请求")
+                InfoRow(label: "平均消耗速度", value: s.speedText(s.sessionCreditRate), divider: false)
+            }.insetGroup()
+            Footnote(text: "只累加实际计费 Credits；未计费请求记为 0，缺失数据不按 0 补齐。耗时缺失的请求不计速度。")
+            Footnote(text: "Token 估算未启用：尚无适用于这些记录、经过验证的换算规则。")
+        }
     }
 }
 
@@ -256,7 +279,7 @@ struct ContextDetail: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("上下文已用").font(.system(size: 12)).foregroundStyle(.secondary)
                     HStack(alignment: .firstTextBaseline, spacing: 4) {
-                        Text("~" + Fmt.compactTokens(s.contextTokens))
+                        Text(s.usesCredits && s.contextTokens == 0 ? "日志未提供 token 数" : "~" + Fmt.compactTokens(s.contextTokens))
                             .font(.system(size: 30, weight: .semibold).monospacedDigit())
                         Text("/ \(window)").font(.system(size: 14, weight: .medium)).foregroundStyle(.secondary)
                     }
@@ -275,7 +298,7 @@ struct ContextDetail: View {
             }
             .insetGroup()
 
-            Footnote(text: "按最近一次请求的输入 token 计算")
+            Footnote(text: s.usesCredits ? "按 Qoder 日志报告的上下文占用比例显示" : "按最近一次请求的输入 token 计算")
         }
     }
 }
@@ -445,8 +468,8 @@ struct SessionListView: View {
                 Spacer(minLength: 8)
                 VStack(alignment: .trailing, spacing: 5) {
                     HStack(alignment: .firstTextBaseline, spacing: 3) {
-                        Text(Fmt.tpsNumber(s?.recentTPS)).font(.system(size: 13.5, weight: .semibold).monospacedDigit())
-                        Text("tok/s").font(.system(size: 10.5, weight: .medium)).foregroundStyle(.secondary)
+                        Text(s.map { $0.speedNumber($0.displayRecentSpeed) } ?? "—").font(.system(size: 13.5, weight: .semibold).monospacedDigit())
+                        Text(s?.speedUnit ?? "tok/s").font(.system(size: 10.5, weight: .medium)).foregroundStyle(.secondary)
                     }
                     if let f = s?.contextFraction {
                         MiniBar(fraction: f).help("上下文 \(Fmt.percent(f, digits: 0))")

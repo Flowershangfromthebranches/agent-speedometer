@@ -350,49 +350,84 @@ struct SegmentedTabs<T: Hashable>: View {
 
 /// Per-step output speed, newest on the right, with the session average dashed.
 struct Sparkline: View {
-    let values: [Double]
+    let steps: [StepSpeed]
     var average: Double? = nil
     var color: Color = Theme.accent
+    @State private var hoverX: CGFloat?
+
+    private var values: [Double] { steps.map(\.rate) }
 
     var body: some View {
         GeometryReader { g in
             let pts = points(in: g.size)
-            ZStack {
+            ZStack(alignment: .topLeading) {
                 if let y = averageY(in: g.size) {
                     Path { p in p.move(to: CGPoint(x: 0, y: y)); p.addLine(to: CGPoint(x: g.size.width, y: y)) }
                         .stroke(Color.primary.opacity(0.22), style: StrokeStyle(lineWidth: 1, dash: [3, 4]))
                 }
-                if pts.count >= 2 {
-                    Path { p in
-                        p.move(to: CGPoint(x: pts[0].x, y: g.size.height))
-                        pts.forEach { p.addLine(to: $0) }
-                        p.addLine(to: CGPoint(x: pts[pts.count - 1].x, y: g.size.height))
-                        p.closeSubpath()
+                if !pts.isEmpty {
+                    if pts.count >= 2 {
+                        Path { p in
+                            p.move(to: CGPoint(x: pts[0].x, y: g.size.height))
+                            pts.forEach { p.addLine(to: $0) }
+                            p.addLine(to: CGPoint(x: pts[pts.count - 1].x, y: g.size.height))
+                            p.closeSubpath()
+                        }
+                        .fill(LinearGradient(colors: [color.opacity(0.32), color.opacity(0)],
+                                             startPoint: .top, endPoint: .bottom))
+                        Path { p in p.addLines(pts) }
+                            .stroke(color, style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
                     }
-                    .fill(LinearGradient(colors: [color.opacity(0.32), color.opacity(0)],
-                                         startPoint: .top, endPoint: .bottom))
-                    Path { p in p.addLines(pts) }
-                        .stroke(color, style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
                     Circle().fill(color)
                         .frame(width: 8, height: 8)
                         .overlay(Circle().stroke(Color.black.opacity(0.5), lineWidth: 2))
                         .position(pts[pts.count - 1])
                 } else {
-                    Text("步数不足，暂无走势")
+                    Text("暂无有效步骤")
                         .font(.system(size: 11)).foregroundStyle(.tertiary)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
+
+                if let x = hoverX, !pts.isEmpty {
+                    let index = pts.count == 1 ? 0 : min(pts.count - 1, max(0,
+                        Int((x / max(1, g.size.width - 4) * CGFloat(pts.count - 1)).rounded())))
+                    let point = pts[index]
+                    Path { p in
+                        p.move(to: CGPoint(x: point.x, y: 0))
+                        p.addLine(to: CGPoint(x: point.x, y: g.size.height))
+                    }
+                    .stroke(color.opacity(0.5), style: StrokeStyle(lineWidth: 1, dash: [3, 3]))
+                    Circle().fill(color)
+                        .frame(width: 9, height: 9)
+                        .overlay(Circle().stroke(Color(nsColor: .windowBackgroundColor), lineWidth: 2))
+                        .position(point)
+
+                    let tipWidth = min(CGFloat(210), g.size.width)
+                    let preferredX = point.x + 12 + tipWidth <= g.size.width
+                        ? point.x + 12 : point.x - 12 - tipWidth
+                    StepSpeedTooltip(step: steps[index])
+                        .frame(width: tipWidth)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .position(x: min(max(preferredX, 0), g.size.width - tipWidth) + tipWidth / 2,
+                                  y: g.size.height / 2)
+                        .allowsHitTesting(false)
+                }
+
+                SparklineHoverArea { hoverX = $0 }
             }
+            .frame(width: g.size.width, height: g.size.height)
         }
+        .onDisappear { hoverX = nil }
         .accessibilityElement()
-        .accessibilityLabel("最近 \(values.count) 步的输出速度走势")
+        .accessibilityLabel("最近 \(values.count) 步的\(steps.first?.credits != nil ? "Credits 消耗" : "输出")速度走势")
     }
 
     private var range: (Double, Double)? {
         var all = values
         if let average { all.append(average) }
         guard let lo = all.min(), let hi = all.max() else { return nil }
-        let pad = max((hi - lo) * 0.15, 1)
+        let minimumPad = steps.first?.credits != nil ? max(abs(hi) * 0.05, 0.0001) : 1
+        let pad = max((hi - lo) * 0.15, minimumPad)
         return (lo - pad, hi + pad)
     }
 
@@ -403,7 +438,8 @@ struct Sparkline: View {
     }
 
     private func points(in size: CGSize) -> [CGPoint] {
-        guard values.count >= 2 else { return [] }
+        guard !values.isEmpty else { return [] }
+        if values.count == 1 { return [CGPoint(x: size.width / 2, y: y(values[0], size))] }
         let step = (size.width - 4) / CGFloat(values.count - 1)
         return values.enumerated().map { i, v in CGPoint(x: CGFloat(i) * step, y: y(v, size)) }
     }
@@ -411,6 +447,88 @@ struct Sparkline: View {
     private func averageY(in size: CGSize) -> CGFloat? {
         guard let average, values.count >= 2 else { return nil }
         return y(average, size)
+    }
+}
+
+/// Track the entire plot, including its empty area, in AppKit-hosted windows and popovers.
+private struct SparklineHoverArea: NSViewRepresentable {
+    let onMove: (CGFloat?) -> Void
+
+    func makeNSView(context: Context) -> TrackingView {
+        let view = TrackingView()
+        view.onMove = onMove
+        return view
+    }
+
+    func updateNSView(_ view: TrackingView, context: Context) { view.onMove = onMove }
+
+    final class TrackingView: NSView {
+        var onMove: ((CGFloat?) -> Void)?
+        private var tracking: NSTrackingArea?
+        private var mouseMonitor: Any?
+
+        deinit {
+            if let mouseMonitor { NSEvent.removeMonitor(mouseMonitor) }
+        }
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            window?.acceptsMouseMovedEvents = true
+            if let mouseMonitor { NSEvent.removeMonitor(mouseMonitor); self.mouseMonitor = nil }
+            if window != nil {
+                mouseMonitor = NSEvent.addLocalMonitorForEvents(matching: [.mouseMoved, .leftMouseDown, .rightMouseDown]) { [weak self] event in
+                    guard let self else { return event }
+                    if event.window === self.window { self.update(event) }
+                    else { self.onMove?(nil) }
+                    return event
+                }
+            }
+        }
+
+        override func updateTrackingAreas() {
+            super.updateTrackingAreas()
+            if let tracking { removeTrackingArea(tracking) }
+            let area = NSTrackingArea(rect: .zero,
+                                      options: [.mouseMoved, .mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+                                      owner: self, userInfo: nil)
+            addTrackingArea(area)
+            tracking = area
+        }
+
+        override func mouseEntered(with event: NSEvent) { update(event) }
+        override func mouseMoved(with event: NSEvent) { update(event) }
+        override func mouseDragged(with event: NSEvent) { update(event) }
+        override func mouseExited(with event: NSEvent) { onMove?(nil) }
+
+        private func update(_ event: NSEvent) {
+            let point = convert(event.locationInWindow, from: nil)
+            onMove?(bounds.contains(point) ? point.x : nil)
+        }
+    }
+}
+
+private struct StepSpeedTooltip: View {
+    let step: StepSpeed
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text("第 \(step.step) 步").fontWeight(.semibold)
+                Spacer(minLength: 6)
+                Text(step.completedAt, format: .dateTime.hour().minute().second())
+                    .foregroundStyle(.secondary)
+            }
+            Text(step.credits != nil ? "\(Fmt.creditsNumber(step.rate)) Credits/s" : Fmt.tps(step.tps)).font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(Theme.accent)
+            Text(step.credits.map { "消耗 \(Fmt.creditsNumber($0)) Credits · \(Fmt.duration(step.duration))" }
+                 ?? "输出 \(Fmt.tokens(step.outputTokens)) · 生成 \(Fmt.duration(step.duration))")
+                .foregroundStyle(.secondary)
+        }
+        .font(.system(size: 10.5).monospacedDigit())
+        .padding(10)
+        .background(RoundedRectangle(cornerRadius: 10).fill(Color(nsColor: .windowBackgroundColor)))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Theme.hairline, lineWidth: 1))
+        .shadow(color: .black.opacity(0.18), radius: 6, y: 2)
     }
 }
 

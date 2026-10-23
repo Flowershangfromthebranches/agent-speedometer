@@ -11,6 +11,7 @@ enum LogFormat {
     case deepseekHarness  // DeepSeek Harness: per-session JSON snapshot with precomputed stats
     case zcode            // ZCode CLI: rollout/model-io-*.jsonl
     case antigravity      // Antigravity: brain/*/.system_generated/logs/transcript.jsonl (tokens only)
+    case qoder            // Qoder / Qoder CN: projects/*/*.jsonl (request-level Credits)
 }
 
 /// A known agent tool: how to detect it and where its sessions live.
@@ -68,9 +69,15 @@ enum ToolRegistry {
                       apps: ["CodeBuddy.app", "CodeBuddy CN.app"], clis: ["codebuddy"],
                       dataPaths: [".codebuddy", ".codebuddycn"],
                       format: .codebuddy, sessionRoots: [".codebuddy/projects", ".codebuddycn/projects"]),
+        // WorkBuddy 国内版和国际版（WorkBuddy AI）是两个独立分发的 App，数据目录也不同：
+        // 国内版 ~/.workbuddy，国际版 ~/.workbuddy-ai。合成一条会只声明一个目录，
+        // 结果是另一个版本能靠 App 名检测到、却读不到任何会话，所以分成两条。
         AgentToolSpec(id: "workbuddy", name: "WorkBuddy", symbol: "briefcase",
-                      apps: ["WorkBuddy.app", "WorkBuddy AI.app"], dataPaths: [".workbuddy"],
+                      apps: ["WorkBuddy.app"], dataPaths: [".workbuddy"],
                       format: .codebuddy, sessionRoots: [".workbuddy/projects"]),
+        AgentToolSpec(id: "workbuddy-ai", name: "WorkBuddy AI", symbol: "wand.and.stars",
+                      apps: ["WorkBuddy AI.app"], dataPaths: [".workbuddy-ai"],
+                      format: .codebuddy, sessionRoots: [".workbuddy-ai/projects"]),
         AgentToolSpec(id: "stepcode", name: "StepCode", symbol: "figure.walk",
                       clis: ["stepcode"], dataPaths: [".stepcode"],
                       format: .pi, sessionRoots: [".stepcode/agent/sessions"]),
@@ -86,11 +93,16 @@ enum ToolRegistry {
                       format: .antigravity,
                       sessionRoots: [".gemini/antigravity-cli/brain", ".gemini/antigravity/brain"]),
 
-        // Detected only.
+        // Desktop editions have separate app bundles, CLIs and local data stores.
         AgentToolSpec(id: "qoder", name: "Qoder", symbol: "q.square",
-                      apps: ["Qoder.app", "Qoder CN.app"], clis: ["qodercli", "qoder"],
-                      dataPaths: [".qoder", ".qoder-cn", ".qoder-cli"],
-                      note: "本地日志里的 token 用量全部为 0，无法计算速度"),
+                      apps: ["Qoder.app"], clis: ["qodercli", "qoder"],
+                      dataPaths: [".qoder", ".qoderwork", ".qoder-cli", "Library/Application Support/com.qoder.app.stable"],
+                      format: .qoder, sessionRoots: [".qoder/projects", ".qoderwork/projects"]),
+        AgentToolSpec(id: "qoder-cn", name: "Qoder CN", symbol: "q.square",
+                      apps: ["Qoder CN.app"], clis: ["qoderclicn"],
+                      dataPaths: [".qoder-cn", ".qoderworkcn", "Library/Application Support/com.qodercn.app.stable"],
+                      format: .qoder, sessionRoots: [".qoder-cn/projects", ".qoderworkcn/projects"]),
+        // Detected only.
         AgentToolSpec(id: "gemini-cli", name: "Gemini CLI", symbol: "diamond", clis: ["gemini"],
                       dataPaths: [".gemini/tmp"], note: notAdapted),
         AgentToolSpec(id: "qwen", name: "Qwen Code", symbol: "q.circle", clis: ["qwen"],
@@ -104,7 +116,8 @@ enum ToolRegistry {
                       apps: ["Command Code.app"], clis: ["commandcode"], dataPaths: [".commandcode"],
                       note: noUsage),
         AgentToolSpec(id: "grok", name: "Grok CLI", symbol: "xmark.circle",
-                      apps: ["Grok Bot.app"], clis: ["grok"], dataPaths: [".grok"], note: noUsage),
+                      apps: ["Grok Bot.app"], clis: ["grok"], dataPaths: [".grok"],
+                      note: "本地日志只记录每轮汇总用量，无法计算实时速度"),
         AgentToolSpec(id: "cursor", name: "Cursor", symbol: "cursorarrow",
                       apps: ["Cursor.app"], clis: ["cursor-agent"],
                       dataPaths: [".cursor", ".local/share/cursor-agent"], note: noLocalData),

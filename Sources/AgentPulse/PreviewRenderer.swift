@@ -11,6 +11,7 @@ enum PreviewRenderer {
 
         if demo {
             DemoData.load(into: monitor)
+            TokenUsageStore.shared.loadDemo()
         } else {
             // Let the monitor parse the tracked sessions first.
             monitor.start()
@@ -82,21 +83,45 @@ enum PreviewRenderer {
 
         // Form uses AppKit controls, which ImageRenderer can't draw: snapshot a real hosting view instead.
         // The window background isn't part of the hosting view's snapshot; paint it in.
-        let host = NSHostingView(rootView: SettingsView(page: .display)
-            .background(Color(nsColor: .windowBackgroundColor))
-            .environmentObject(monitor).environmentObject(HUDController.shared).environmentObject(MenuBarModules.shared))
-        let win = NSWindow(contentRect: NSRect(x: -3000, y: 0, width: 780, height: 640),
-                           styleMask: [.titled], backing: .buffered, defer: false)
-        win.appearance = NSAppearance(named: .darkAqua)
-        win.contentView = host
-        win.orderFrontRegardless()
-        RunLoop.main.run(until: Date().addingTimeInterval(1.0))
-        if let rep = host.bitmapImageRepForCachingDisplay(in: host.bounds) {
-            host.cacheDisplay(in: host.bounds, to: rep)
-            try? rep.representation(using: .png, properties: [:])?.write(to: dir.appendingPathComponent("settings.png"))
-            print("wrote settings.png")
+        func saveSettingsPage(_ page: SettingsPage, name: String, size: NSSize,
+                              usageRange: UsageRange? = nil, usageTool: String? = nil) {
+            let host = NSHostingView(rootView: SettingsView(page: page,
+                                                            usagePreviewRange: usageRange,
+                                                            usagePreviewTool: usageTool)
+                .background(Color(nsColor: .windowBackgroundColor))
+                .environment(\.staticGlass, true)
+                .environmentObject(monitor).environmentObject(HUDController.shared).environmentObject(MenuBarModules.shared))
+            let win = NSWindow(contentRect: NSRect(x: -3000, y: 0, width: size.width, height: size.height),
+                               styleMask: [.titled], backing: .buffered, defer: false)
+            win.appearance = NSAppearance(named: .darkAqua)
+            win.contentView = host
+            win.orderFrontRegardless()
+            RunLoop.main.run(until: Date().addingTimeInterval(1.0))
+            if let rep = host.bitmapImageRepForCachingDisplay(in: host.bounds) {
+                host.cacheDisplay(in: host.bounds, to: rep)
+                try? rep.representation(using: .png, properties: [:])?.write(to: dir.appendingPathComponent(name))
+                print("wrote \(name)")
+            }
+            win.orderOut(nil)
         }
-        win.orderOut(nil)
+        saveSettingsPage(.display, name: "settings.png", size: NSSize(width: 860, height: 660))
+        if demo {
+            saveSettingsPage(.usage, name: "settings-usage.png", size: NSSize(width: 860, height: 1440))
+            saveSettingsPage(.usage, name: "settings-usage-all.png", size: NSSize(width: 860, height: 1440),
+                             usageRange: .all)
+            saveSettingsPage(.usage, name: "settings-usage-tool.png", size: NSSize(width: 860, height: 1440),
+                             usageRange: .month, usageTool: "claude")
+        } else {
+            TokenUsageStore.shared.load(range: .month)
+            let deadline = Date().addingTimeInterval(30)
+            while TokenUsageStore.shared.loading && Date() < deadline {
+                RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+            }
+            if TokenUsageStore.shared.loaded {
+                saveSettingsPage(.usage, name: "settings-usage.png", size: NSSize(width: 860, height: 1440),
+                                 usageRange: .month)
+            }
+        }
     }
 }
 
@@ -151,7 +176,11 @@ enum DemoData {
             s.sessionTPS = tps * 0.93
             let wobble: [Double] = [-0.14, -0.07, -0.12, -0.02, 0.05, -0.04, -0.10, 0.0, 0.08, 0.03,
                                     -0.04, 0.01, 0.06, -0.03, -0.09, 0.04, 0.07, -0.01, 0.02, 0.0]
-            s.stepTPS = wobble.map { tps * (1 + $0) }
+            s.stepSpeeds = wobble.enumerated().map { i, delta in
+                let output = Int(tps * (1 + delta) * 10)
+                return StepSpeed(step: steps - wobble.count + i + 1, outputTokens: output,
+                                 duration: 10, completedAt: now.addingTimeInterval(-ago - Double(wobble.count - i - 1) * 20))
+            }
             s.avgTTFT = ttft
             s.ttftAvailable = ttft != nil
             s.modelTime = Double(steps) * 8.7
@@ -183,9 +212,10 @@ enum DemoData {
             make(AgentSource(id: "opencode"), "docs-site", "deepseek-v4", ago: 240, turns: 4, steps: 31, tps: 245,
                  ctx: 22_000, window: 128_000),
         ]
-        let tools = ["claude", "codex", "opencode", "codebuddy", "cursor"].compactMap(ToolRegistry.spec).map {
-            DetectedTool(spec: $0, hasApp: $0.id != "opencode", hasCLI: $0.id != "cursor", hasData: true)
-        }
+        let tools = ["claude", "codex", "opencode", "codebuddy", "workbuddy", "stepcode", "cursor"]
+            .compactMap(ToolRegistry.spec).map {
+                DetectedTool(spec: $0, hasApp: $0.id != "opencode", hasCLI: $0.id != "cursor", hasData: true)
+            }
         monitor.loadDemo(tools: tools, sessions: rows.map(\.0), stats: Dictionary(uniqueKeysWithValues: rows.map { ($0.0.path, $0.1) }))
     }
 }

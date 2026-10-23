@@ -1,6 +1,13 @@
 import Foundation
 
 enum Fmt {
+    static func creditsNumber(_ value: Double?) -> String {
+        guard let value, value.isFinite, value >= 0 else { return "—" }
+        if value == 0 { return "0" }
+        if value < 0.0001 { return "<0.0001" }
+        return String(format: value < 1 ? "%.4f" : "%.2f", value)
+    }
+
     static func compactTokens(_ n: Int) -> String {
         let d = Double(n)
         switch n {
@@ -31,6 +38,16 @@ enum Fmt {
     static func percent(_ f: Double?, digits: Int = 1) -> String {
         guard let f else { return "—" }
         return String(format: "%.\(digits)f%%", f * 100)
+    }
+
+    static func usd(_ v: Double?) -> String {
+        guard let v, v.isFinite, v >= 0 else { return "—" }
+        if v == 0 { return "$0.00" }
+        if v < 0.01 { return "<$0.01" }
+        if v < 10 { return String(format: "$%.2f", v) }
+        if v < 1000 { return String(format: "$%.1f", v) }
+        if v < 10_000 { return String(format: "$%.0f", v) }
+        return String(format: "$%.1fK", v / 1000)
     }
 
     static func duration(_ t: TimeInterval?) -> String {

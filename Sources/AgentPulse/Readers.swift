@@ -58,6 +58,7 @@ enum Readers {
         case .pi: return { PiParser() }
         case .zcode: return { ZCodeParser() }
         case .antigravity: return { AntigravityParser() }
+        case .qoder: return { QoderParser() }
         case .opencodeDB, .deepseekHarness: return nil
         }
     }
@@ -76,7 +77,7 @@ enum SessionDiscovery {
         let roots = spec.sessionRoots.map { home.appendingPathComponent($0).path }
         var out: [SessionRef]
         switch format {
-        case .claudeCode, .codebuddy, .pi:
+        case .claudeCode, .codebuddy, .pi, .qoder:
             // <root>/<project>/<session>.jsonl (top level only; sub-agents live deeper)
             out = roots.flatMap { filesTwoLevels($0, ext: "jsonl", since: since) }
                 .map { SessionRef(path: $0.0, source: source, locator: .file($0.0), modified: $0.1) }
@@ -230,6 +231,100 @@ enum SessionDiscovery {
         return days.flatMap { files($0, since: since) { $0.hasSuffix(".jsonl") } }
     }
 
+    // MARK: Codex usage-only discovery
+    //
+    // Codex compresses old rollouts in place (`rollout-*.jsonl.zst`) and moves
+    // archived conversations to a flat `archived_sessions` directory. The live
+    // monitor only tails plain JSONL, but historical usage needs all of them.
+
+    static func codexUsageSessions(since: Date?) -> [SessionRef] {
+        let source = AgentSource(id: "codex")
+        var out: [SessionRef] = []
+        for root in [".codex/sessions", ".codex/archived_sessions"] {
+            let base = home.appendingPathComponent(root).path
+            for (path, modified, _) in codexRollouts(base, since: since) {
+                out.append(SessionRef(path: path, source: source,
+                                      locator: .file(path), modified: modified))
+            }
+        }
+        return out.sorted { $0.modified > $1.modified }
+    }
+
+    /// Session id -> rollout path for every file on disk. Forked sessions replay
+    /// their parent's history, so the usage scan needs parents even when they are
+    /// outside the selected time range.
+    static func codexSessionIndex() -> [String: String] {
+        var index: [String: String] = [:]
+        for root in [".codex/sessions", ".codex/archived_sessions"] {
+            let base = home.appendingPathComponent(root).path
+            for (path, _, _) in codexRollouts(base, since: nil) {
+                guard let sid = codexSessionID(from: path) else { continue }
+                if let existing = index[sid] {
+                    // Prefer the live plain copy over a compressed/archived one.
+                    if existing.hasSuffix(".jsonl"), !path.hasSuffix(".jsonl") { continue }
+                }
+                index[sid] = path
+            }
+        }
+        return index
+    }
+
+    /// Every rollout under `root`, including `.jsonl.zst`. Compressed rollouts are
+    /// immutable, so their filename date (not the bulk-compression mtime) decides
+    /// whether they can contain events in the range.
+    private static func codexRollouts(_ root: String, since: Date?) -> [(String, Date, Int)] {
+        let fm = FileManager.default
+        var out: [(String, Date, Int)] = []
+        let grace: TimeInterval = 30 * 86400
+
+        func walk(_ dir: String, depth: Int) {
+            guard depth <= 6, let names = try? fm.contentsOfDirectory(atPath: dir) else { return }
+            for name in names {
+                if name.hasPrefix(".") { continue }
+                let path = dir + "/" + name
+                var isDir: ObjCBool = false
+                guard fm.fileExists(atPath: path, isDirectory: &isDir) else { continue }
+                if isDir.boolValue { walk(path, depth: depth + 1); continue }
+                let compressed = name.hasSuffix(".jsonl.zst")
+                guard compressed || name.hasSuffix(".jsonl") else { continue }
+                guard let (mtime, size) = fileStat(path), size > 0 else { continue }
+
+                if let since {
+                    let started = codexSessionDate(from: name)
+                    if compressed {
+                        guard let started, started >= since.addingTimeInterval(-grace) else { continue }
+                    } else {
+                        let effective = max(mtime, started ?? .distantPast)
+                        guard effective >= since.addingTimeInterval(-grace) else { continue }
+                    }
+                }
+                if size < 2048 && Date().timeIntervalSince(mtime) > 600 { continue }
+                out.append((path, mtime, size))
+            }
+        }
+        walk(root, depth: 0)
+        return out
+    }
+
+    static func codexSessionID(from path: String) -> String? {
+        let name = (path as NSString).lastPathComponent as NSString
+        let ns = name as String
+        let range = NSRange(location: 0, length: ns.utf16.count)
+        guard let match = codexUUIDRegex.firstMatch(in: ns, range: range) else { return nil }
+        return (ns as NSString).substring(with: match.range)
+    }
+
+    private static func codexSessionDate(from name: String) -> Date? {
+        guard name.hasPrefix("rollout-"), name.count >= 18 else { return nil }
+        let start = name.index(name.startIndex, offsetBy: 8)
+        let end = name.index(start, offsetBy: 10, limitedBy: name.endIndex) ?? name.endIndex
+        let day = String(name[start..<end])
+        return J.date(day + "T00:00:00Z")
+    }
+
+    private static let codexUUIDRegex = try! NSRegularExpression(
+        pattern: "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
+
     // MARK: opencode family
 
     private static var opencodeCache: [String: (stamp: String, refs: [SessionRef])] = [:]
@@ -288,8 +383,16 @@ final class SQLiteDB {
     deinit { sqlite3_close(handle) }
 
     func query(_ sql: String, _ args: [Any] = []) -> [[Any?]] {
+        var out: [[Any?]] = []
+        each(sql, args) { out.append($0) }
+        return out
+    }
+
+    /// Streams rows to the callback instead of building one big array — important for
+    /// the usage scan, which walks every message in a multi-hundred-megabyte database.
+    func each(_ sql: String, _ args: [Any] = [], _ body: ([Any?]) -> Void) {
         var stmt: OpaquePointer?
-        guard sqlite3_prepare_v2(handle, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
+        guard sqlite3_prepare_v2(handle, sql, -1, &stmt, nil) == SQLITE_OK else { return }
         defer { sqlite3_finalize(stmt) }
         let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
         for (i, a) in args.enumerated() {
@@ -301,7 +404,6 @@ final class SQLiteDB {
             default: sqlite3_bind_null(stmt, idx)
             }
         }
-        var out: [[Any?]] = []
         while sqlite3_step(stmt) == SQLITE_ROW {
             var row: [Any?] = []
             for c in 0..<sqlite3_column_count(stmt) {
@@ -312,9 +414,8 @@ final class SQLiteDB {
                 default: row.append(nil)
                 }
             }
-            out.append(row)
+            body(row)
         }
-        return out
     }
 }
 

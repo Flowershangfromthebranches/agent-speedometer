@@ -1,0 +1,68 @@
+name: Windows installer
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "要上传安装包的 Release tag（例如 v1.0.3）"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+        working-directory: windows
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Resolve version
+        id: ver
+        run: |
+          $tag = if ("${{ github.event_name }}" -eq "workflow_dispatch") { "${{ inputs.tag }}" } else { "${{ github.ref_name }}" }
+          "tag=$tag" >> $env:GITHUB_OUTPUT
+          "version=$($tag.TrimStart('v'))" >> $env:GITHUB_OUTPUT
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Run tests
+        run: python -m unittest discover -s tests -v
+
+      - name: Build AgentPulse.exe
+        run: >
+          pyinstaller --noconfirm --clean --onedir --windowed
+          --name AgentPulse
+          --distpath dist --workpath build
+          --hidden-import pystray._win32
+          agentpulse.py
+
+      - name: Build installer
+        run: |
+          if (-not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) { choco install innosetup -y --no-progress }
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DAppVersion=${{ steps.ver.outputs.version }}" installer\AgentPulse.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Upload to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $exe = "dist\AgentPulse-Setup-${{ steps.ver.outputs.version }}.exe"
+          gh release view "${{ steps.ver.outputs.tag }}" *> $null
+          if ($LASTEXITCODE -ne 0) { gh release create "${{ steps.ver.outputs.tag }}" --title "AgentPulse ${{ steps.ver.outputs.version }}" --notes "" }
+          gh release upload "${{ steps.ver.outputs.tag }}" $exe --clobber
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AgentPulse-Setup-${{ steps.ver.outputs.version }}
+          path: windows/dist/AgentPulse-Setup-*.exe

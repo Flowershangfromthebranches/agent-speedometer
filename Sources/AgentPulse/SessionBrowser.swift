@@ -203,8 +203,8 @@ struct SessionBrowserView: View {
                 Text(subtitle(ref)).font(.system(size: 11.5).monospacedDigit()).foregroundStyle(.secondary).lineLimit(1)
             }
             Spacer(minLength: 6)
-            if let tps = live?.recentTPS {
-                Text(Fmt.tps(tps)).font(.system(size: 12, weight: .semibold).monospacedDigit())
+            if let live, live.displayRecentSpeed != nil {
+                Text(live.speedText(live.displayRecentSpeed)).font(.system(size: 12, weight: .semibold).monospacedDigit())
             }
         }
         .padding(.vertical, 4)
@@ -304,23 +304,28 @@ struct SessionDetailView: View {
             header
             Grid(horizontalSpacing: 10, verticalSpacing: 10) {
                 GridRow {
-                    OverviewTile(label: "输出速度（近 5 步）", value: Fmt.tpsNumber(s.recentTPS), unit: "tok/s")
-                    OverviewTile(label: "Token · 缓存命中", value: Fmt.compactTokens(s.totalTokens),
-                                 unit: Fmt.percent(s.cacheHitRate), unitColor: Theme.accent)
-                    OverviewTile(label: "上下文 · \(Fmt.compactTokens(s.contextTokens)) / \(s.contextWindow.map(Fmt.compactTokens) ?? "?")",
+                    OverviewTile(label: "\(s.speedTitle)（近 5 步）", value: s.speedNumber(s.displayRecentSpeed), unit: s.speedUnit)
+                    OverviewTile(label: s.usesCredits ? "实际 Credits 消耗" : "Token · 缓存命中", value: s.usageValue,
+                                 unit: s.usageUnit, unitColor: Theme.accent)
+                    OverviewTile(label: s.contextTitle,
                                  value: Fmt.percent(s.contextFraction, digits: 0), bar: s.contextFraction)
                 }
             }
 
             VStack(alignment: .leading, spacing: 8) {
                 HStack {
-                    Text("每步输出速度")
+                    Text(s.usesCredits ? "每步 Credits 消耗速度" : "每步输出速度")
                     Spacer()
-                    Text("\(s.steps) 步 · 平均 \(Fmt.tps(s.sessionTPS))")
+                    Text("\(s.steps) 步 · 平均 \(s.speedText(s.displaySessionSpeed))")
                 }
                 .font(.system(size: 12).monospacedDigit())
                 .foregroundStyle(.secondary)
-                Sparkline(values: s.stepTPS, average: s.sessionTPS).frame(height: 84)
+                Sparkline(steps: s.displayStepSpeeds, average: s.displaySessionSpeed).frame(height: 84)
+                    .id(s.path)
+                if !s.displayStepSpeeds.isEmpty {
+                    Text("最近 \(s.displayStepSpeeds.count) 个有效步骤 · 悬停查看详情")
+                        .font(.system(size: 10.5)).foregroundStyle(.tertiary)
+                }
             }
             .padding(16)
             .background(RoundedRectangle(cornerRadius: 18, style: .continuous).fill(Theme.groupFill))
@@ -328,14 +333,14 @@ struct SessionDetailView: View {
             Grid(alignment: .top, horizontalSpacing: 10, verticalSpacing: 10) {
                 GridRow {
                     VStack(spacing: 0) {
-                        InfoRow(label: "最近一步", value: Fmt.tps(s.lastTPS))
-                        InfoRow(label: "会话平均", value: Fmt.tps(s.sessionTPS))
+                        InfoRow(label: "最近一步", value: s.speedText(s.displayLastSpeed))
+                        InfoRow(label: "会话平均", value: s.speedText(s.displaySessionSpeed))
                         InfoRow(label: "首 token 平均（TTFT）", value: s.ttftAvailable ? Fmt.duration(s.avgTTFT) : "日志未记录",
                                 dimValue: !s.ttftAvailable, divider: false)
                     }
                     .insetGroup()
                     VStack(spacing: 0) {
-                        InfoRow(label: "模型用时", value: Fmt.duration(s.modelTime))
+                        InfoRow(label: s.usesCredits ? "请求用时（含等待）" : "模型用时", value: Fmt.duration(s.modelTime))
                         InfoRow(label: "工具调用用时", value: Fmt.duration(s.toolTime))
                         InfoRow(label: "轮次 · 步数", value: "\(s.turns) 轮 · \(s.steps) 步", divider: false)
                     }
@@ -343,17 +348,21 @@ struct SessionDetailView: View {
                 }
             }
 
-            VStack(alignment: .leading, spacing: 10) {
-                Text("Token 构成").font(.system(size: 12, weight: .semibold)).foregroundStyle(.secondary)
-                    .padding(.horizontal, 4)
-                TokenBar(slices: s.tokenSlices).padding(.horizontal, 4)
-                VStack(spacing: 0) {
-                    let slices = s.tokenSlices
-                    ForEach(Array(slices.enumerated()), id: \.1.id) { i, sl in
-                        InfoRow(label: sl.label, value: Fmt.tokens(sl.value), dot: sl.color, divider: i < slices.count - 1)
+            if s.usesCredits {
+                CreditsSessionDetail(s: s)
+            } else {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("Token 构成").font(.system(size: 12, weight: .semibold)).foregroundStyle(.secondary)
+                        .padding(.horizontal, 4)
+                    TokenBar(slices: s.tokenSlices).padding(.horizontal, 4)
+                    VStack(spacing: 0) {
+                        let slices = s.tokenSlices
+                        ForEach(Array(slices.enumerated()), id: \.1.id) { i, sl in
+                            InfoRow(label: sl.label, value: Fmt.tokens(sl.value), dot: sl.color, divider: i < slices.count - 1)
+                        }
                     }
+                    .insetGroup()
                 }
-                .insetGroup()
             }
 
             if let n = s.speedNote { Footnote(text: n) }

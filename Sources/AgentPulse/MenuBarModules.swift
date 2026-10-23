@@ -10,7 +10,7 @@ enum MenuBarModule: String, CaseIterable, Identifiable {
     var label: String {
         switch self {
         case .session: return "会话 / 模型名"
-        case .speed: return "速度（tok/s）"
+        case .speed: return "速度"
         case .tokens: return "Token 用量"
         case .context: return "上下文占用"
         }
@@ -29,8 +29,8 @@ enum MenuBarModule: String, CaseIterable, Identifiable {
     func sample(_ s: SessionStats?) -> String {
         switch self {
         case .session: return s?.model ?? s?.source.displayName ?? "AgentPulse"
-        case .speed: return Fmt.tps(s?.recentTPS)
-        case .tokens: return s.map { "\(Fmt.compactTokens($0.totalTokens)) · \(Fmt.percent($0.cacheHitRate))" } ?? "—"
+        case .speed: return s.map { $0.speedText($0.displayRecentSpeed) } ?? "— tok/s"
+        case .tokens: return s.map { "\($0.usageValue) \($0.usageUnit)" } ?? "—"
         case .context: return Fmt.percent(s?.contextFraction, digits: 0)
         }
     }
@@ -139,9 +139,9 @@ final class MenuBarModules: NSObject, ObservableObject, NSPopoverDelegate {
             add(" " + name)
         case .speed:
             // Text only, to keep the menu bar compact.
-            add(Fmt.tps(s?.recentTPS))
+            add(s.map { $0.speedText($0.displayRecentSpeed) } ?? "— tok/s")
         case .tokens:
-            if let s { add(" \(Fmt.compactTokens(s.totalTokens)) · \(Fmt.percent(s.cacheHitRate))") } else { add(" —") }
+            if let s { add(" \(s.usageValue) \(s.usageUnit)") } else { add(" —") }
         case .context:
             add(" " + Fmt.percent(s?.contextFraction, digits: 0))
         }

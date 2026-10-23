@@ -100,6 +100,7 @@ final class ClaudeParser: SessionParser {
             let input = J.int(u["input_tokens"])
             let cRead = J.int(u["cache_read_input_tokens"])
             let cWrite = J.int(u["cache_creation_input_tokens"])
+            let cWrite1h = J.int(J.dict(u["cache_creation"])?["ephemeral_1h_input_tokens"])
             let out = J.int(u["output_tokens"])
             acc.touch(ts)
             if let model { acc.model = model }
@@ -117,6 +118,7 @@ final class ClaudeParser: SessionParser {
             r.outputTokens = max(r.outputTokens, out)
             r.uncachedInput = input
             r.cacheWrite = cWrite
+            r.cacheWrite1h = min(cWrite1h, cWrite)
             r.cacheRead = cRead
             r.contextTokens = input + cRead + cWrite
             acc.requests.append(r)
